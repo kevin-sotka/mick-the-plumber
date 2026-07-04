@@ -1,0 +1,1447 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<title>Mick the Plumber: Pipe Panic</title>
+<style>
+  html, body {
+    margin: 0; padding: 0; width: 100%; height: 100%;
+    background: #0E1B2C;
+    overflow: hidden;
+    font-family: 'Courier New', monospace;
+    touch-action: none;
+    -webkit-user-select: none; user-select: none;
+    -webkit-touch-callout: none;
+  }
+  #wrap {
+    position: fixed; inset: 0;
+    display: flex; align-items: center; justify-content: center;
+    background: #0E1B2C;
+  }
+  canvas {
+    image-rendering: pixelated;
+    image-rendering: -moz-crisp-edges;
+    image-rendering: crisp-edges;
+    background: #0E1B2C;
+    touch-action: none;
+    max-width: 100vw;
+    max-height: 100vh;
+  }
+  #muteBtn {
+    position: fixed;
+    top: 10px; right: 10px;
+    width: 44px; height: 44px;
+    background: rgba(14,27,44,0.8);
+    border: 2px solid #F4E9D8;
+    color: #F4E9D8;
+    font-size: 20px;
+    border-radius: 6px;
+    z-index: 20;
+    display: flex; align-items: center; justify-content: center;
+    cursor: pointer;
+    touch-action: manipulation;
+  }
+  #fallbackMsg {
+    position: fixed;
+    bottom: 6px; left: 50%; transform: translateX(-50%);
+    color: #F4E9D8; font-size: 11px; opacity: 0.8;
+    z-index: 20; display: none; text-align: center; width: 90%;
+  }
+</style>
+</head>
+<body>
+<div id="wrap">
+  <canvas id="game"></canvas>
+</div>
+<button id="muteBtn">&#128266;</button>
+<div id="fallbackMsg"></div>
+<script>
+(function () {
+'use strict';
+
+/* =========================================================
+   MICK THE PLUMBER: PIPE PANIC
+   Single-file vanilla Canvas game.
+   ========================================================= */
+
+// ---------- Canvas / DOM setup ----------
+var canvas = document.getElementById('game');
+var ctx = canvas.getContext('2d', { alpha: false });
+ctx.imageSmoothingEnabled = false;
+var muteBtn = document.getElementById('muteBtn');
+var fallbackMsg = document.getElementById('fallbackMsg');
+
+var BASE_W = 384, BASE_H = 216; // internal render resolution (16:9), scaled to fit
+canvas.width = BASE_W;
+canvas.height = BASE_H;
+
+function resize() {
+  var scale = Math.min(window.innerWidth / BASE_W, window.innerHeight / BASE_H);
+  scale = Math.max(scale, 1);
+  var flooredScale = Math.floor(scale);
+  if (flooredScale < 1) flooredScale = scale; // allow fractional on small phones
+  var useScale = window.innerWidth < 500 ? scale : (flooredScale >= 1 ? flooredScale : scale);
+  canvas.style.width = (BASE_W * useScale) + 'px';
+  canvas.style.height = (BASE_H * useScale) + 'px';
+}
+window.addEventListener('resize', resize);
+resize();
+
+// ---------- Palette ----------
+var PAL = {
+  teal: '#1F6F6B',
+  navy: '#0E1B2C',
+  copper: '#B87333',
+  rust: '#8C3B1F',
+  brick: '#5A3A2E',
+  slime: '#8CE04B',
+  water: '#2E86AB',
+  cream: '#F4E9D8',
+  // extra derived shades for shading pixel art
+  tealDark: '#123F3D',
+  tealLight: '#2E9C96',
+  skin: '#E8B487',
+  skinDark: '#C08A5C',
+  mustache: '#3B2A20',
+  boot: '#2A2118',
+  bootDark: '#181310',
+  metal: '#D8D8D8',
+  metalDark: '#8A8A8A',
+  white: '#FFFFFF',
+  black: '#000000',
+  orange: '#E08A2E',
+  orangeDark: '#B4661C',
+  waterLight: '#4FA8D8',
+  waterFoam: '#CFEFF7',
+  steam: '#E8E8E8',
+  spark: '#FFE066',
+  brickDark: '#3E281F',
+  slimeDark: '#5E9E30'
+};
+
+// ---------- Pixel sprite framework ----------
+// Each sprite is an array of strings (rows), one char per pixel.
+// '.' = transparent. Other chars map via a palette dict.
+function buildSprite(rows, map) {
+  var h = rows.length, w = rows[0].length;
+  var off = document.createElement('canvas');
+  off.width = w; off.height = h;
+  var octx = off.getContext('2d');
+  octx.imageSmoothingEnabled = false;
+  var imgData = octx.createImageData(w, h);
+  for (var y = 0; y < h; y++) {
+    var row = rows[y];
+    for (var x = 0; x < w; x++) {
+      var ch = row[x];
+      var idx = (y * w + x) * 4;
+      if (ch === '.' || ch === undefined) {
+        imgData.data[idx + 3] = 0;
+        continue;
+      }
+      var hex = map[ch];
+      if (!hex) { imgData.data[idx + 3] = 0; continue; }
+      var r = parseInt(hex.slice(1, 3), 16);
+      var g = parseInt(hex.slice(3, 5), 16);
+      var b = parseInt(hex.slice(5, 7), 16);
+      imgData.data[idx] = r;
+      imgData.data[idx + 1] = g;
+      imgData.data[idx + 2] = b;
+      imgData.data[idx + 3] = 255;
+    }
+  }
+  octx.putImageData(imgData, 0, 0);
+  return off;
+}
+
+// Mick palette map (shared)
+var MICK_MAP = {
+  s: PAL.skin, k: PAL.skinDark, m: PAL.mustache,
+  t: PAL.teal, T: PAL.tealDark, l: PAL.tealLight,
+  o: PAL.orange, O: PAL.orangeDark,
+  b: PAL.boot, B: PAL.bootDark,
+  w: PAL.metal, W: PAL.metalDark,
+  e: PAL.black, // eyes
+  h: '#7A4A2A', // hair/sideburn
+  c: PAL.cream
+};
+
+// Mick: 16 wide x 24 tall, drawn facing right (runner moving right).
+// Run cycle frame 1 (contact pose)
+var MICK_RUN_1 = [
+  '......ooooo.....',
+  '.....ooooooo....',
+  '.....ossssso....',
+  '.....ossssso....',
+  '....ssssssss....',
+  '....smsssmss....',
+  '....smmmmss.....',
+  '....ssssss......',
+  '...ttttttttt....',
+  '..ttttttttttt...',
+  '..tTtttttttT....',
+  '..tttttttttt.w..',
+  '.oottttttoo.ww..',
+  '.oo......oo.ww..',
+  '.o........o.....',
+  '.bb......bb.....',
+  'bbb......bb.....',
+  'BBB......BB.....',
+  '................',
+  '................',
+  '................',
+  '................',
+  '................',
+  '................'
+];
+
+var MICK_RUN_2 = [
+  '......ooooo.....',
+  '.....ooooooo....',
+  '.....ossssso....',
+  '.....ossssso....',
+  '....ssssssss....',
+  '....smsssmss....',
+  '....smmmmss.....',
+  '....ssssss......',
+  '...ttttttttt....',
+  '..ttttttttttt...',
+  '..tTtttttttT....',
+  '..tttttttttt....',
+  '.oottttttoo.....',
+  '.oo......ooo....',
+  '.o........obb...',
+  '.b.......bbbb...',
+  'bb.......bbb....',
+  'BB.......BB.....',
+  '................',
+  '................',
+  '................',
+  '................',
+  '................',
+  '................'
+];
+
+var MICK_RUN_3 = [
+  '......ooooo.....',
+  '.....ooooooo....',
+  '.....ossssso....',
+  '.....ossssso....',
+  '....ssssssss....',
+  '....smsssmss....',
+  '....smmmmss.....',
+  '....ssssss......',
+  '...ttttttttt....',
+  '..ttttttttttt...',
+  '..tTtttttttT....',
+  '..tttttttttt....',
+  '.oottttttoo.....',
+  '.oo......oo.....',
+  'wo........o.....',
+  'ww.......bb.....',
+  '.w......bbb.....',
+  '........BBB.....',
+  '................',
+  '................',
+  '................',
+  '................',
+  '................',
+  '................'
+];
+
+var MICK_RUN_4 = [
+  '......ooooo.....',
+  '.....ooooooo....',
+  '.....ossssso....',
+  '.....ossssso....',
+  '....ssssssss....',
+  '....smsssmss....',
+  '....smmmmss.....',
+  '....ssssss......',
+  '...ttttttttt....',
+  '..ttttttttttt...',
+  '..tTtttttttT....',
+  '..tttttttttt....',
+  '.oottttttoo.....',
+  'oo......ooo.....',
+  'o........obb....',
+  '........bbbb....',
+  '.......bbb......',
+  '.......BB.......',
+  '................',
+  '................',
+  '................',
+  '................',
+  '................',
+  '................'
+];
+
+var MICK_JUMP = [
+  '......ooooo.....',
+  '.....ooooooo....',
+  '.....ossssso....',
+  '.....ossssso....',
+  '....ssssssss....',
+  '....smsssmss....',
+  '....smmmmss.....',
+  '....ssssss......',
+  '..wttttttttt....',
+  '.wwttttttttt....',
+  '..tTtttttttT....',
+  '..ttttttttttw...',
+  '.oobb...bboo.w..',
+  '.obb.....obb....',
+  '.bb.......bb....',
+  '.b.........b....',
+  '................',
+  '................',
+  '................',
+  '................',
+  '................',
+  '................',
+  '................',
+  '................'
+];
+
+var MICK_WHACK_1 = [
+  '......ooooo.....',
+  '.....ooooooo....',
+  '.....ossssso....',
+  '.....ossssso....',
+  '....ssssssss.w..',
+  '....smsssmss.ww.',
+  '....smmmmss..ww.',
+  '....ssssss..ww..',
+  '...ttttttttww...',
+  '..tttttttttWW...',
+  '..tTtttttttt....',
+  '..tttttttttt....',
+  '.oottttttoo.....',
+  '.oo......oo.....',
+  '.o........o.....',
+  '.bb......bb.....',
+  'bbb......bb.....',
+  'BBB......BB.....',
+  '................',
+  '................',
+  '................',
+  '................',
+  '................',
+  '................'
+];
+
+var MICK_WHACK_2 = [
+  '......ooooo.....',
+  '.....ooooooo....',
+  '.....ossssso.w..',
+  '.....ossssso.ww.',
+  '....ssssssswwWW.',
+  '....smsssmsswW..',
+  '....smmmmss.....',
+  '....ssssss......',
+  '...ttttttttt....',
+  '..ttttttttttt...',
+  '..tTtttttttT....',
+  '..tttttttttt....',
+  '.oottttttoo.....',
+  '.oo......oo.....',
+  '.o........o.....',
+  '.bb......bb.....',
+  'bbb......bb.....',
+  'BBB......BB.....',
+  '................',
+  '................',
+  '................',
+  '................',
+  '................',
+  '................'
+];
+
+var MICK_HITSTUN = [
+  '....ooooo.......',
+  '...ooooooo......',
+  '...ossssso......',
+  '...ossssso......',
+  '..ssssssss......',
+  '..smsssmss......',
+  '..smmmmss.......',
+  '..ssssss........',
+  '.ttttttttt......',
+  'ttttttttttt.....',
+  'tTtttttttT......',
+  'ttttttttttt.....',
+  'ottttttoo.......',
+  'o......oo.......',
+  '.......o.b......',
+  '......bb.b......',
+  '.....bb..b......',
+  '.....B...B......',
+  '................',
+  '................',
+  '................',
+  '................',
+  '................',
+  '................'
+];
+
+var PROP_MAP = {
+  p: PAL.copper, P: PAL.rust, w: PAL.waterLight, W: PAL.water,
+  f: PAL.waterFoam, g: PAL.slime, G: PAL.slimeDark,
+  s: PAL.steam, m: PAL.metalDark, M: PAL.metal, b: PAL.brick, B: PAL.brickDark
+};
+
+// Burst pipe: wall-mounted, spraying, 2 frames. 16x16.
+var PIPE_BURST_1 = [
+  '..BBBBBBBBBBBB..',
+  '.Bbbbbbbbbbbbb..',
+  '.Bbb.mmmm.bbb...',
+  '.Bbb.mPPm.bbb...',
+  '.Bbb.mPPm.bbb...',
+  '.Bbb.mPPm.bbb...',
+  '..s.f.mm.s......',
+  '.s.f..mm..f.s...',
+  's.f...mm...f.s..',
+  '.f....mm....f...',
+  '..f...mm...f....',
+  '...f..mm..f.....',
+  '....f.mm.f......',
+  '.....fmmf.......',
+  '......mm........',
+  '................'
+];
+
+var PIPE_BURST_2 = [
+  '..BBBBBBBBBBBB..',
+  '.Bbbbbbbbbbbbb..',
+  '.Bbb.mmmm.bbb...',
+  '.Bbb.mPPm.bbb...',
+  '.Bbb.mPPm.bbb...',
+  '.Bbb.mPPm.bbb...',
+  '...s..mm..s.....',
+  's..f..mm..f..s..',
+  '.f.....mm....f..',
+  '..f....mm...f...',
+  '...f...mm..f....',
+  '....f..mm.f.....',
+  '.....f.mm.......',
+  '......fmmf......',
+  '......mm........',
+  '................'
+];
+
+// Patched pipe (after successful whack)
+var PIPE_PATCHED = [
+  '..BBBBBBBBBBBB..',
+  '.Bbbbbbbbbbbbb..',
+  '.Bbb.mmmm.bbb...',
+  '.Bbb.mPPm.bbb...',
+  '.Bbb.mggm.bbb...',
+  '.Bbb.mPPm.bbb...',
+  '.Bbb..mm..bbb...',
+  '.Bbb..mm..bbb...',
+  '....b.mm.b......',
+  '....bb..bb......',
+  '......mm........',
+  '......mm........',
+  '................',
+  '................',
+  '................',
+  '................'
+];
+
+// Gunk blob, floor obstacle, 2-frame idle. 16x12.
+var GUNK_1 = [
+  '................',
+  '................',
+  '....GGGGGG......',
+  '..Gggggggggg....',
+  '.Gggg.gg.gggG...',
+  '.Gggggggggggg...',
+  '.Gggg.gg.gggG...',
+  '.Ggggggggggg....',
+  '..GGgggggGG.....',
+  '...GGGGGGG......',
+  '................',
+  '................'
+];
+
+var GUNK_2 = [
+  '................',
+  '................',
+  '.....GGGGG......',
+  '...Ggggggggg....',
+  '..Gggg.gg.ggG...',
+  '.Ggggggggggggg..',
+  '..Gggg.gg.ggG...',
+  '...Gggggggggg...',
+  '....GGgggGGG....',
+  '.....GGGGG......',
+  '................',
+  '................'
+];
+
+// Pre-render all sprites to offscreen canvases
+var SPR = {
+  mickRun: [
+    buildSprite(MICK_RUN_1, MICK_MAP),
+    buildSprite(MICK_RUN_2, MICK_MAP),
+    buildSprite(MICK_RUN_3, MICK_MAP),
+    buildSprite(MICK_RUN_4, MICK_MAP)
+  ],
+  mickJump: buildSprite(MICK_JUMP, MICK_MAP),
+  mickWhack: [
+    buildSprite(MICK_WHACK_1, MICK_MAP),
+    buildSprite(MICK_WHACK_2, MICK_MAP)
+  ],
+  mickHitstun: buildSprite(MICK_HITSTUN, MICK_MAP),
+  pipeBurst: [
+    buildSprite(PIPE_BURST_1, PROP_MAP),
+    buildSprite(PIPE_BURST_2, PROP_MAP)
+  ],
+  pipePatched: buildSprite(PIPE_PATCHED, PROP_MAP),
+  gunk: [
+    buildSprite(GUNK_1, PROP_MAP),
+    buildSprite(GUNK_2, PROP_MAP)
+  ]
+};
+
+var MICK_W = 16, MICK_H = 24;
+var PROP_W = 16, PROP_H = 16;
+var GUNK_W = 16, GUNK_H = 12;
+
+// ---------- Audio ----------
+var BPM = 92;
+var BEAT_SEC = 60 / BPM; // ~0.6522s
+var AUDIO_OFFSET = 0.046;
+var audio = new Audio();
+var audioReady = false;
+var audioFailed = false;
+var songDuration = 144; // fallback est. 2:24
+var isMuted = false;
+
+audio.src = './song.mp3';
+audio.preload = 'auto';
+audio.loop = false;
+
+audio.addEventListener('loadedmetadata', function () {
+  if (isFinite(audio.duration) && audio.duration > 0) {
+    songDuration = audio.duration;
+  }
+  audioReady = true;
+});
+audio.addEventListener('error', function () {
+  audioFailed = true;
+  showFallback('Audio failed to load — playing silently. Timing uses an internal clock.');
+});
+
+function showFallback(msg) {
+  fallbackMsg.textContent = msg;
+  fallbackMsg.style.display = 'block';
+  setTimeout(function () { fallbackMsg.style.display = 'none'; }, 4000);
+}
+
+// Silent clock fallback: if audio fails, we drive timing off performance.now()
+var silentClockStart = 0;
+function getSongTime() {
+  if (audioFailed || (!audioReady && audioStarted)) {
+    return (performance.now() - silentClockStart) / 1000;
+  }
+  return audio.currentTime;
+}
+
+var audioStarted = false;
+function startAudio() {
+  if (audioStarted) return;
+  audioStarted = true;
+  silentClockStart = performance.now();
+  if (audioFailed) return;
+  var p = audio.play();
+  if (p && p.catch) {
+    p.catch(function () {
+      audioFailed = true;
+      showFallback('Audio blocked — playing silently.');
+    });
+  }
+}
+
+muteBtn.addEventListener('click', function (e) {
+  e.stopPropagation();
+  isMuted = !isMuted;
+  audio.muted = isMuted;
+  muteBtn.innerHTML = isMuted ? '&#128263;' : '&#128266;';
+});
+
+// ---------- Input ----------
+var keys = {};
+var jumpPressed = false, whackPressed = false;
+
+function onJump() { jumpPressed = true; }
+function onWhack() { whackPressed = true; }
+
+var keydownHandler = function (e) {
+  if (['Space', 'KeyW', 'KeyJ', 'Enter'].indexOf(e.code) !== -1) e.preventDefault();
+  if (e.code === 'Space' || e.code === 'KeyW' || e.code === 'ArrowUp') {
+    onJump();
+  } else if (e.code === 'KeyJ' || e.code === 'Enter') {
+    onWhack();
+  }
+  handleGestureStart();
+};
+window.addEventListener('keydown', keydownHandler);
+
+var activeTouches = {};
+function touchZoneHandler(e) {
+  e.preventDefault();
+  handleGestureStart();
+  var touches = e.changedTouches;
+  for (var i = 0; i < touches.length; i++) {
+    var t = touches[i];
+    var rect = canvas.getBoundingClientRect();
+    var x = t.clientX - rect.left;
+    var half = rect.width / 2;
+    if (x < half) { onJump(); } else { onWhack(); }
+  }
+}
+canvas.addEventListener('touchstart', touchZoneHandler, { passive: false });
+
+function mouseZoneHandler(e) {
+  handleGestureStart();
+  var rect = canvas.getBoundingClientRect();
+  var x = e.clientX - rect.left;
+  var half = rect.width / 2;
+  if (x < half) { onJump(); } else { onWhack(); }
+}
+canvas.addEventListener('mousedown', mouseZoneHandler);
+
+// prevent scroll/selection on touch globally within canvas area
+document.addEventListener('touchmove', function (e) {
+  if (e.target === canvas) e.preventDefault();
+}, { passive: false });
+
+var gestureHandled = false;
+function handleGestureStart() {
+  if (gestureHandled) return;
+  if (state === STATE.TITLE) {
+    gestureHandled = true;
+    startAudio();
+    state = STATE.PLAY;
+    resetRun();
+  }
+}
+
+// ---------- Game constants ----------
+var GROUND_Y = 168; // y coordinate of floor line in base coords
+var GRAVITY = 1400;
+var JUMP_VEL = -420;
+var BASE_SCROLL_SPEED = 110; // px/sec
+var SPEED_RAMP_INTERVAL = 30; // seconds
+var SPEED_RAMP_MULT = 1.08;
+var HIT_WINDOW = 0.150; // seconds, ±150ms
+var FLOW_CAP = 8;
+var WATER_NOTCHES = 8; // number of misses to fill from empty to top
+var MICK_X = 70; // fixed screen x position of Mick
+
+// ---------- Game state ----------
+var STATE = { TITLE: 0, PLAY: 1, WIN: 2, LOSE: 3 };
+var state = STATE.TITLE;
+
+var mick, obstacles, particles, floaters;
+var score, flow, maxFlow, waterLevel, patchedCount, totalPipes, elapsedGameTime;
+var speedMult, lastRampBucket;
+var beatGrid, nextBeatIndex;
+var screenShake, hitstopTimer, timeScale;
+var loseSlowmo;
+var confetti;
+var wipedBrow;
+
+function resetRun() {
+  mick = {
+    y: 0, vy: 0, onGround: true,
+    anim: 'run', animFrame: 0, animTimer: 0,
+    whacking: false, whackTimer: 0,
+    hitstun: 0,
+    squash: 0, // squash/stretch factor timer
+    facing: 1
+  };
+  obstacles = [];
+  particles = [];
+  floaters = [];
+  confetti = [];
+  score = 0;
+  flow = 0;
+  maxFlow = 0;
+  waterLevel = 0;
+  patchedCount = 0;
+  totalPipes = 0;
+  elapsedGameTime = 0;
+  speedMult = 1;
+  lastRampBucket = 0;
+  nextBeatIndex = 0;
+  screenShake = 0;
+  hitstopTimer = 0;
+  timeScale = 1;
+  loseSlowmo = 0;
+  wipedBrow = false;
+  beatGrid = buildBeatGrid(songDuration);
+}
+
+// Deterministic seeded RNG (mulberry32) so pattern is stable per session but varied
+function mulberry32(seed) {
+  return function () {
+    seed |= 0; seed = (seed + 0x6D2B79F5) | 0;
+    var t = Math.imul(seed ^ (seed >>> 15), 1 | seed);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+// Build a beat-grid pattern of obstacles across the whole song duration.
+// Density ramps A -> B -> C across thirds of the song.
+function buildBeatGrid(duration) {
+  var rng = mulberry32(1234567);
+  var grid = [];
+  var beatCount = Math.floor((duration - AUDIO_OFFSET) / BEAT_SEC);
+  var thirdA = beatCount * 0.33;
+  var thirdB = beatCount * 0.66;
+  // skip first 4 beats (intro breathing room)
+  for (var i = 4; i < beatCount - 2; i++) {
+    var section = i < thirdA ? 'A' : (i < thirdB ? 'B' : 'C');
+    var chance = section === 'A' ? 0.32 : (section === 'B' ? 0.45 : 0.58);
+    if (rng() < chance) {
+      var t = AUDIO_OFFSET + i * BEAT_SEC;
+      var type = rng() < 0.55 ? 'pipe' : 'gunk';
+      // avoid two obstacles too close together (min 1 beat gap enforced by loop granularity)
+      grid.push({ time: t, type: type, used: false });
+    }
+  }
+  return grid;
+}
+
+// ---------- Particle helpers (pooled, minimal allocation) ----------
+var MAX_PARTICLES = 80;
+var particlePool = [];
+for (var pi = 0; pi < MAX_PARTICLES; pi++) {
+  particlePool.push({ active: false, x: 0, y: 0, vx: 0, vy: 0, life: 0, maxLife: 0, color: '#fff', size: 1, type: 'spark' });
+}
+function spawnParticle(x, y, vx, vy, life, color, size, type) {
+  for (var i = 0; i < MAX_PARTICLES; i++) {
+    var p = particlePool[i];
+    if (!p.active) {
+      p.active = true; p.x = x; p.y = y; p.vx = vx; p.vy = vy;
+      p.life = life; p.maxLife = life; p.color = color; p.size = size; p.type = type || 'spark';
+      return p;
+    }
+  }
+  return null;
+}
+function spawnBurstFX(x, y) {
+  // sparks
+  for (var i = 0; i < 8; i++) {
+    var ang = Math.random() * Math.PI * 2;
+    var spd = 60 + Math.random() * 90;
+    spawnParticle(x, y, Math.cos(ang) * spd, Math.sin(ang) * spd - 40, 0.35 + Math.random() * 0.2, PAL.spark, 2, 'spark');
+  }
+  // steam puffs
+  for (var j = 0; j < 4; j++) {
+    spawnParticle(x, y - 4, (Math.random() - 0.5) * 20, -30 - Math.random() * 20, 0.6 + Math.random() * 0.3, PAL.steam, 3, 'steam');
+  }
+}
+function spawnSplash(x, y) {
+  for (var i = 0; i < 6; i++) {
+    var ang = -Math.PI / 2 + (Math.random() - 0.5) * 1.6;
+    var spd = 50 + Math.random() * 70;
+    spawnParticle(x, y, Math.cos(ang) * spd, Math.sin(ang) * spd, 0.4 + Math.random() * 0.2, PAL.waterLight, 2, 'splash');
+  }
+}
+
+// ---------- Confetti (win screen) ----------
+function spawnConfetti() {
+  confetti = [];
+  for (var i = 0; i < 30; i++) {
+    confetti.push({
+      x: Math.random() * BASE_W,
+      y: -20 - Math.random() * 100,
+      vy: 40 + Math.random() * 40,
+      vx: (Math.random() - 0.5) * 30,
+      rot: Math.random() * Math.PI * 2,
+      vrot: (Math.random() - 0.5) * 6,
+      color: [PAL.copper, PAL.slime, PAL.cream, PAL.orange][Math.floor(Math.random() * 4)]
+    });
+  }
+}
+
+// ---------- Parallax layers (procedural, drawn via canvas paths, cheap) ----------
+var parallaxOffsets = [0, 0, 0];
+
+function drawParallaxLayer(offset, speedFactor, drawFn) {
+  var w = BASE_W;
+  var x = -(offset * speedFactor) % w;
+  drawFn(x);
+  drawFn(x + w);
+}
+
+function drawCitySilhouette(xOff) {
+  ctx.fillStyle = '#152A3F';
+  var buildings = [
+    [0, 60, 40, 108], [45, 40, 30, 128], [80, 80, 35, 88],
+    [120, 30, 45, 138], [170, 70, 30, 98], [205, 50, 40, 118],
+    [250, 90, 35, 78], [290, 35, 40, 133], [335, 65, 40, 103]
+  ];
+  for (var i = 0; i < buildings.length; i++) {
+    var b = buildings[i];
+    ctx.fillRect(xOff + b[0], b[1], b[2], b[3]);
+  }
+}
+
+function drawBrickWall(xOff) {
+  ctx.fillStyle = PAL.brick;
+  ctx.fillRect(xOff, 90, BASE_W, 78);
+  ctx.fillStyle = PAL.brickDark;
+  var brickW = 16, brickH = 8;
+  for (var row = 0; row < 10; row++) {
+    var yy = 90 + row * brickH;
+    var stagger = (row % 2) * (brickW / 2);
+    for (var col = -1; col < BASE_W / brickW + 1; col++) {
+      var xx = xOff + col * brickW + stagger;
+      ctx.strokeStyle = PAL.brickDark;
+      ctx.lineWidth = 1;
+      ctx.strokeRect(xx, yy, brickW, brickH);
+    }
+  }
+  // background pipes running along wall
+  ctx.fillStyle = PAL.metalDark;
+  ctx.fillRect(xOff, 100, BASE_W, 6);
+  ctx.fillRect(xOff, 140, BASE_W, 5);
+}
+
+function drawForegroundPipes(xOff) {
+  ctx.fillStyle = PAL.copper;
+  for (var i = 0; i < 5; i++) {
+    var x = xOff + i * 90 + 20;
+    ctx.fillRect(x, 0, 8, 40);
+    ctx.fillStyle = PAL.rust;
+    ctx.fillRect(x, 36, 12, 6);
+    ctx.fillStyle = PAL.copper;
+  }
+}
+
+// ---------- Beat marker "incoming" telegraphs ----------
+// Obstacles spawn off-screen right and scroll left toward Mick, timed to beat grid.
+var SPAWN_LEAD = 2.2; // seconds of travel time before hit point
+
+function updateSpawns(songTime, dt) {
+  while (nextBeatIndex < beatGrid.length && beatGrid[nextBeatIndex].time - SPAWN_LEAD <= songTime) {
+    var beat = beatGrid[nextBeatIndex];
+    var travel = SPAWN_LEAD; // seconds to travel from spawn x to hit x
+    var scrollSpeed = BASE_SCROLL_SPEED * speedMult;
+    var spawnX = MICK_X + scrollSpeed * travel;
+    if (spawnX < BASE_W + 20) spawnX = BASE_W + 20;
+    obstacles.push({
+      type: beat.type,
+      x: spawnX,
+      hitTime: beat.time,
+      resolved: false,
+      whackWindowOpen: false,
+      animTimer: 0
+    });
+    totalPipes += (beat.type === 'pipe') ? 1 : 0;
+    nextBeatIndex++;
+  }
+}
+
+// ---------- Update ----------
+var lastFrameTime = 0;
+var MAX_DT = 1 / 30; // delta cap to avoid spiral of death on tab-switch
+
+function update(dt) {
+  // hitstop freezes gameplay motion but not the timer itself (short)
+  if (hitstopTimer > 0) {
+    hitstopTimer -= dt;
+    renderFrame(0); // still render (idle)
+    return;
+  }
+
+  var scaledDt = dt * timeScale;
+
+  if (state === STATE.PLAY) {
+    var songTime = getSongTime();
+    elapsedGameTime = songTime;
+
+    // speed ramp every 30s
+    var bucket = Math.floor(songTime / SPEED_RAMP_INTERVAL);
+    if (bucket > lastRampBucket) {
+      lastRampBucket = bucket;
+      speedMult *= SPEED_RAMP_MULT;
+    }
+
+    var scrollSpeed = BASE_SCROLL_SPEED * speedMult;
+
+    // parallax
+    parallaxOffsets[0] += scrollSpeed * 0.15 * scaledDt;
+    parallaxOffsets[1] += scrollSpeed * 0.45 * scaledDt;
+    parallaxOffsets[2] += scrollSpeed * 1.0 * scaledDt;
+
+    updateSpawns(songTime, scaledDt);
+
+    // move obstacles
+    for (var i = obstacles.length - 1; i >= 0; i--) {
+      var o = obstacles[i];
+      var timeToHit = o.hitTime - songTime;
+      // position derived from time-to-hit so it stays synced to audio
+      o.x = MICK_X + scrollSpeed * timeToHit;
+      o.animTimer += scaledDt;
+
+      var hw = (o.type === 'pipe') ? PROP_W : GUNK_W;
+      var withinWindow = Math.abs(timeToHit) <= HIT_WINDOW;
+      o.whackWindowOpen = withinWindow;
+
+      if (!o.resolved) {
+        if (o.type === 'pipe') {
+          if (whackPressed && withinWindow) {
+            o.resolved = true;
+            o.result = 'patched';
+            patchedCount++;
+            flow = Math.min(FLOW_CAP, flow + 1);
+            maxFlow = Math.max(maxFlow, flow);
+            score += 100 * flow;
+            hitstopTimer = 0.06;
+            screenShake = Math.max(screenShake, 4);
+            spawnBurstFX(o.x + PROP_W / 2, GROUND_Y - PROP_H / 2 + 4);
+            mick.whacking = true; mick.whackTimer = 0.18;
+          } else if (timeToHit < -HIT_WINDOW) {
+            // missed
+            o.resolved = true;
+            o.result = 'missed';
+            flow = 0;
+            waterLevel = Math.min(WATER_NOTCHES, waterLevel + 1);
+            screenShake = Math.max(screenShake, 6);
+            spawnSplash(MICK_X + MICK_W / 2, GROUND_Y + 4);
+          }
+        } else {
+          // gunk: cleared by jump; touching while grounded = hit-stun
+          var mickBox = { x: MICK_X - 6, y: GROUND_Y - mick.y - MICK_H, w: MICK_W + 4, h: MICK_H };
+          var gunkBox = { x: o.x, y: GROUND_Y - GUNK_H, w: GUNK_W, h: GUNK_H };
+          var overlapX = mickBox.x < gunkBox.x + gunkBox.w && mickBox.x + mickBox.w > gunkBox.x;
+          if (overlapX) {
+            var mickBottom = GROUND_Y - mick.y;
+            var clearedByJump = (mick.y > 10); // airborne enough
+            if (!clearedByJump) {
+              o.resolved = true;
+              o.result = 'hit';
+              flow = 0;
+              waterLevel = Math.min(WATER_NOTCHES, waterLevel + 1);
+              mick.hitstun = 0.4;
+              screenShake = Math.max(screenShake, 6);
+              spawnSplash(MICK_X + MICK_W / 2, GROUND_Y + 4);
+            } else if (timeToHit < -0.05) {
+              o.resolved = true;
+              o.result = 'cleared';
+              score += 20;
+            }
+          }
+        }
+      }
+
+      if (o.x < -40) {
+        obstacles.splice(i, 1);
+      }
+    }
+
+    // player physics (y = height above ground; vy negative = moving up)
+    if (mick.hitstun > 0) {
+      mick.hitstun -= scaledDt;
+    } else {
+      if (jumpPressed && mick.onGround) {
+        mick.vy = JUMP_VEL;
+        mick.onGround = false;
+        mick.squash = 1; // trigger stretch
+      }
+      mick.vy += GRAVITY * scaledDt;
+      mick.y += (-mick.vy) * scaledDt;
+      if (mick.y <= 0) {
+        mick.y = 0;
+        if (!mick.onGround) { mick.squash = -1; } // squash on landing
+        mick.onGround = true;
+        mick.vy = 0;
+      } else {
+        mick.onGround = false;
+      }
+    }
+
+    if (mick.squash !== 0) {
+      mick.squash *= (1 - Math.min(1, scaledDt * 10));
+      if (Math.abs(mick.squash) < 0.02) mick.squash = 0;
+    }
+
+    // animation state machine
+    if (mick.hitstun > 0) {
+      mick.anim = 'hitstun';
+    } else if (mick.whacking) {
+      mick.anim = 'whack';
+      mick.whackTimer -= scaledDt;
+      if (mick.whackTimer <= 0) mick.whacking = false;
+    } else if (!mick.onGround) {
+      mick.anim = 'jump';
+    } else {
+      mick.anim = 'run';
+    }
+
+    if (mick.anim === 'run') {
+      mick.animTimer += scaledDt;
+      var frameDur = 0.09 / Math.max(0.4, speedMult * 0.6);
+      if (mick.animTimer >= frameDur) {
+        mick.animTimer -= frameDur;
+        mick.animFrame = (mick.animFrame + 1) % 4;
+      }
+    } else if (mick.anim === 'whack') {
+      mick.animTimer += scaledDt;
+      mick.animFrame = Math.floor(mick.animTimer / 0.09) % 2;
+    }
+
+    // particles
+    updateParticles(scaledDt);
+
+    // screen shake decay
+    if (screenShake > 0) screenShake = Math.max(0, screenShake - scaledDt * 30);
+
+    // reset one-shot inputs
+    jumpPressed = false; whackPressed = false;
+
+    // win/lose checks
+    if (waterLevel >= WATER_NOTCHES) {
+      triggerLose();
+    } else if (audioReady && !audioFailed && audio.ended) {
+      triggerWin();
+    } else if ((audioFailed || !audioReady) && audioStarted && songTime >= songDuration) {
+      triggerWin();
+    }
+  } else if (state === STATE.LOSE) {
+    loseSlowmo = Math.min(1, loseSlowmo + dt * 0.6);
+    updateParticles(dt * (1 - loseSlowmo * 0.85));
+    if (screenShake > 0) screenShake = Math.max(0, screenShake - dt * 30);
+    jumpPressed = false; whackPressed = false;
+  } else if (state === STATE.WIN) {
+    for (var c = 0; c < confetti.length; c++) {
+      var cf = confetti[c];
+      cf.x += cf.vx * dt;
+      cf.y += cf.vy * dt;
+      cf.rot += cf.vrot * dt;
+      if (cf.y > BASE_H + 20) {
+        cf.y = -20;
+        cf.x = Math.random() * BASE_W;
+      }
+    }
+    updateParticles(dt);
+    jumpPressed = false; whackPressed = false;
+  } else {
+    jumpPressed = false; whackPressed = false;
+  }
+
+  renderFrame(scaledDt);
+}
+
+function updateParticles(dt) {
+  for (var i = 0; i < MAX_PARTICLES; i++) {
+    var p = particlePool[i];
+    if (!p.active) continue;
+    p.life -= dt;
+    if (p.life <= 0) { p.active = false; continue; }
+    p.x += p.vx * dt;
+    p.y += p.vy * dt;
+    if (p.type === 'spark') { p.vy += 300 * dt; }
+    if (p.type === 'steam') { p.vy *= (1 - dt * 0.5); p.vx *= (1 - dt * 0.5); }
+    if (p.type === 'splash') { p.vy += 250 * dt; }
+  }
+}
+
+function triggerWin() {
+  state = STATE.WIN;
+  spawnConfetti();
+  try { audio.pause(); } catch (e) {}
+}
+function triggerLose() {
+  state = STATE.LOSE;
+  loseSlowmo = 0;
+  try { audio.pause(); } catch (e) {}
+}
+
+// ---------- Render ----------
+function renderFrame() {
+  ctx.save();
+  var shakeX = 0, shakeY = 0;
+  if (screenShake > 0) {
+    shakeX = (Math.random() - 0.5) * screenShake;
+    shakeY = (Math.random() - 0.5) * screenShake;
+    ctx.translate(shakeX, shakeY);
+  }
+
+  // Background
+  ctx.fillStyle = PAL.navy;
+  ctx.fillRect(-10, -10, BASE_W + 20, BASE_H + 20);
+
+  drawParallaxLayer(parallaxOffsets[0], 1, drawCitySilhouette);
+  drawParallaxLayer(parallaxOffsets[1], 1, drawBrickWall);
+  drawParallaxLayer(parallaxOffsets[2], 1, drawForegroundPipes);
+
+  // Floor
+  ctx.fillStyle = PAL.brickDark;
+  ctx.fillRect(-10, GROUND_Y, BASE_W + 20, BASE_H - GROUND_Y + 10);
+  ctx.fillStyle = '#2A1B15';
+  ctx.fillRect(-10, GROUND_Y, BASE_W + 20, 3);
+
+  if (state === STATE.TITLE) {
+    drawTitleScreen();
+  } else {
+    drawObstacles();
+    drawMick();
+    drawParticles();
+    drawWaterPlane();
+    drawHUD();
+    if (state === STATE.WIN) drawWinScreen();
+    if (state === STATE.LOSE) drawLoseScreen();
+  }
+
+  // scanline overlay (subtle CRT feel), applied globally
+  drawScanlines();
+
+  ctx.restore();
+}
+
+function drawObstacles() {
+  for (var i = 0; i < obstacles.length; i++) {
+    var o = obstacles[i];
+    if (o.x < -40 || o.x > BASE_W + 20) continue;
+    if (o.type === 'pipe') {
+      var frame;
+      if (o.resolved && o.result === 'patched') {
+        frame = SPR.pipePatched;
+      } else {
+        var idx = Math.floor(o.animTimer * 6) % 2;
+        frame = SPR.pipeBurst[idx];
+      }
+      var py = GROUND_Y - PROP_H - 20;
+      // telegraph glow when whack window open
+      if (o.whackWindowOpen && !o.resolved) {
+        ctx.save();
+        ctx.globalAlpha = 0.35 + Math.sin(performance.now() / 40) * 0.15;
+        ctx.fillStyle = PAL.slime;
+        ctx.fillRect(o.x - 2, py - 2, PROP_W + 4, PROP_H + 4);
+        ctx.restore();
+      }
+      ctx.drawImage(frame, Math.round(o.x), py, PROP_W, PROP_H);
+    } else {
+      if (o.resolved && (o.result === 'hit')) continue;
+      var gidx = Math.floor(o.animTimer * 4) % 2;
+      var gframe = SPR.gunk[gidx];
+      var gy = GROUND_Y - GUNK_H;
+      ctx.drawImage(gframe, Math.round(o.x), gy, GUNK_W, GUNK_H);
+    }
+  }
+}
+
+function drawMick() {
+  var drawX = MICK_X;
+  var drawY = GROUND_Y - MICK_H - mick.y;
+
+  var scaleX = 1, scaleY = 1;
+  if (mick.squash > 0) { // jump stretch
+    scaleY = 1 + mick.squash * 0.18;
+    scaleX = 1 - mick.squash * 0.12;
+  } else if (mick.squash < 0) { // land squash
+    scaleY = 1 + mick.squash * 0.22;
+    scaleX = 1 - mick.squash * 0.16;
+  }
+
+  var sprite;
+  if (mick.anim === 'hitstun') {
+    sprite = SPR.mickHitstun;
+  } else if (mick.anim === 'jump') {
+    sprite = SPR.mickJump;
+  } else if (mick.anim === 'whack') {
+    sprite = SPR.mickWhack[mick.animFrame % 2];
+  } else {
+    sprite = SPR.mickRun[mick.animFrame % 4];
+  }
+
+  ctx.save();
+  var cx = drawX + MICK_W / 2, cy = drawY + MICK_H;
+  ctx.translate(cx, cy);
+  ctx.scale(scaleX, scaleY);
+  ctx.translate(-MICK_W / 2, -MICK_H);
+  ctx.drawImage(sprite, 0, 0, MICK_W, MICK_H);
+  ctx.restore();
+
+  // splash feet when water is high
+  if (waterLevel >= WATER_NOTCHES * 0.5 && mick.onGround) {
+    var waterTopY = getWaterTopY();
+    if (drawY + MICK_H > waterTopY - 2) {
+      ctx.fillStyle = PAL.waterFoam;
+      ctx.globalAlpha = 0.6;
+      ctx.fillRect(drawX - 1, waterTopY - 1, MICK_W + 2, 2);
+      ctx.globalAlpha = 1;
+    }
+  }
+}
+
+function drawParticles() {
+  for (var i = 0; i < MAX_PARTICLES; i++) {
+    var p = particlePool[i];
+    if (!p.active) continue;
+    var alpha = Math.max(0, p.life / p.maxLife);
+    ctx.globalAlpha = alpha;
+    ctx.fillStyle = p.color;
+    var sz = p.type === 'steam' ? p.size * (1.5 - alpha * 0.5) : p.size;
+    ctx.fillRect(Math.round(p.x - sz / 2), Math.round(p.y - sz / 2), sz, sz);
+  }
+  ctx.globalAlpha = 1;
+}
+
+function getWaterTopY() {
+  var maxRise = GROUND_H_RANGE();
+  var frac = waterLevel / WATER_NOTCHES;
+  return GROUND_Y + 6 - frac * maxRise;
+}
+function GROUND_H_RANGE() { return 110; } // how far water can rise from floor line
+
+function drawWaterPlane() {
+  var topY = getWaterTopY();
+  if (topY > BASE_H) return;
+  ctx.save();
+  ctx.globalAlpha = 0.82;
+  ctx.fillStyle = PAL.water;
+  ctx.fillRect(-10, topY, BASE_W + 20, BASE_H - topY + 20);
+  ctx.globalAlpha = 1;
+  // ripples
+  var t = performance.now() / 500;
+  ctx.strokeStyle = PAL.waterLight;
+  ctx.lineWidth = 1;
+  for (var i = 0; i < 4; i++) {
+    var ry = topY + 4 + i * 6 + Math.sin(t + i) * 1.5;
+    ctx.beginPath();
+    for (var x = -10; x <= BASE_W + 10; x += 8) {
+      var yy = ry + Math.sin((x / 18) + t * 1.4 + i) * 1.2;
+      if (x === -10) ctx.moveTo(x, yy); else ctx.lineTo(x, yy);
+    }
+    ctx.stroke();
+  }
+  // foam line at top
+  ctx.fillStyle = PAL.waterFoam;
+  ctx.globalAlpha = 0.7;
+  for (var fx = -10; fx <= BASE_W + 10; fx += 6) {
+    var fy = topY + Math.sin(fx / 14 + t * 2) * 1.5;
+    ctx.fillRect(fx, fy, 3, 2);
+  }
+  ctx.globalAlpha = 1;
+  // floating debris
+  ctx.fillStyle = PAL.brickDark;
+  var debX = (performance.now() / 40) % (BASE_W + 40) - 20;
+  ctx.fillRect(BASE_W - debX, topY + 8, 10, 3);
+  ctx.restore();
+}
+
+function drawScanlines() {
+  ctx.save();
+  ctx.globalAlpha = 0.06;
+  ctx.fillStyle = '#000000';
+  for (var y = 0; y < BASE_H; y += 2) {
+    ctx.fillRect(-10, y, BASE_W + 20, 1);
+  }
+  ctx.restore();
+}
+
+function drawHUD() {
+  ctx.save();
+  ctx.textBaseline = 'top';
+  ctx.font = '10px "Courier New", monospace';
+  // score
+  ctx.fillStyle = PAL.navy;
+  ctx.fillRect(4, 4, 96, 14);
+  ctx.fillStyle = PAL.cream;
+  ctx.fillText('SCORE ' + score, 8, 7);
+
+  // FLOW meter
+  var flowW = 70;
+  ctx.fillStyle = PAL.navy;
+  ctx.fillRect(BASE_W - flowW - 8, 4, flowW + 4, 14);
+  ctx.fillStyle = PAL.cream;
+  ctx.fillText('FLOW x' + flow, BASE_W - flowW - 4, 7);
+  var barW = (flow / FLOW_CAP) * (flowW - 6);
+  ctx.fillStyle = flow >= FLOW_CAP ? PAL.spark : PAL.slime;
+  ctx.fillRect(BASE_W - flowW - 4, 15, Math.max(0, barW), 2);
+
+  // Water gauge (top-center vertical-ish bar as horizontal for readability)
+  var gaugeW = 100, gaugeX = (BASE_W - gaugeW) / 2;
+  ctx.fillStyle = PAL.navy;
+  ctx.fillRect(gaugeX - 2, 4, gaugeW + 4, 12);
+  ctx.strokeStyle = PAL.cream;
+  ctx.strokeRect(gaugeX, 6, gaugeW, 8);
+  var fillW = (waterLevel / WATER_NOTCHES) * gaugeW;
+  ctx.fillStyle = waterLevel >= WATER_NOTCHES * 0.75 ? PAL.rust : PAL.water;
+  ctx.fillRect(gaugeX, 6, fillW, 8);
+  ctx.fillStyle = PAL.cream;
+  ctx.font = '7px "Courier New", monospace';
+  ctx.fillText('WATER', gaugeX + gaugeW / 2 - 14, 8);
+  ctx.restore();
+}
+
+function drawTitleScreen() {
+  ctx.save();
+  ctx.fillStyle = 'rgba(14,27,44,0.55)';
+  ctx.fillRect(-10, -10, BASE_W + 20, BASE_H + 20);
+
+  // Pixel logo (drawn via blocky text rects for chunky retro-arcade look)
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+
+  ctx.font = 'bold 26px "Courier New", monospace';
+  ctx.fillStyle = PAL.copper;
+  ctx.fillText('MICK THE PLUMBER', BASE_W / 2 + 2, 62 + 2);
+  ctx.fillStyle = PAL.cream;
+  ctx.fillText('MICK THE PLUMBER', BASE_W / 2, 62);
+
+  ctx.font = 'bold 13px "Courier New", monospace';
+  ctx.fillStyle = PAL.slime;
+  ctx.fillText('- PIPE PANIC -', BASE_W / 2, 84);
+
+  // Mick preview, big
+  ctx.save();
+  ctx.translate(BASE_W / 2 - MICK_W * 2, 100);
+  ctx.scale(4, 4);
+  var bob = Math.sin(performance.now() / 250) * 1;
+  ctx.drawImage(SPR.mickRun[0], 0, bob, MICK_W, MICK_H);
+  ctx.restore();
+
+  var blink = Math.sin(performance.now() / 300) > -0.2;
+  if (blink) {
+    ctx.font = 'bold 14px "Courier New", monospace';
+    ctx.fillStyle = PAL.cream;
+    ctx.fillText('TAP / CLICK / PRESS TO START', BASE_W / 2, 176);
+  }
+
+  ctx.font = '9px "Courier New", monospace';
+  ctx.fillStyle = PAL.cream;
+  ctx.fillText('MOBILE: LEFT = JUMP    RIGHT = WHACK', BASE_W / 2, 192);
+  ctx.fillText('DESKTOP: SPACE/W = JUMP   J/ENTER = WHACK', BASE_W / 2, 203);
+
+  ctx.textAlign = 'left';
+  ctx.restore();
+}
+
+function drawWinScreen() {
+  ctx.save();
+  ctx.fillStyle = 'rgba(14,27,44,0.65)';
+  ctx.fillRect(-10, -10, BASE_W + 20, BASE_H + 20);
+
+  // confetti (tiny wrenches represented as small rotated rects with a hook)
+  for (var i = 0; i < confetti.length; i++) {
+    var c = confetti[i];
+    ctx.save();
+    ctx.translate(c.x, c.y);
+    ctx.rotate(c.rot);
+    ctx.fillStyle = c.color;
+    ctx.fillRect(-4, -1, 8, 2);
+    ctx.fillRect(-4, -3, 3, 6);
+    ctx.restore();
+  }
+
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.font = 'bold 22px "Courier New", monospace';
+  ctx.fillStyle = PAL.slime;
+  ctx.fillText('SHIFT COMPLETE', BASE_W / 2, 50);
+
+  // Mick wiping brow
+  ctx.save();
+  ctx.translate(BASE_W / 2 - MICK_W * 2, 66);
+  ctx.scale(4, 4);
+  ctx.drawImage(SPR.mickWhack[0], 0, 0, MICK_W, MICK_H);
+  ctx.restore();
+
+  var pct = totalPipes > 0 ? Math.round((patchedCount / totalPipes) * 100) : 100;
+  ctx.font = '12px "Courier New", monospace';
+  ctx.fillStyle = PAL.cream;
+  ctx.fillText('SCORE: ' + score, BASE_W / 2, 150);
+  ctx.fillText('PIPES PATCHED: ' + pct + '%', BASE_W / 2, 165);
+  ctx.fillText('MAX FLOW: x' + maxFlow, BASE_W / 2, 180);
+
+  ctx.font = 'bold 13px "Courier New", monospace';
+  ctx.fillStyle = PAL.cream;
+  ctx.fillText('TAP / CLICK / PRESS TO RESTART', BASE_W / 2, 200);
+
+  ctx.textAlign = 'left';
+  ctx.restore();
+}
+
+function drawLoseScreen() {
+  ctx.save();
+  ctx.fillStyle = 'rgba(14,27,44,' + (0.3 + loseSlowmo * 0.45) + ')';
+  ctx.fillRect(-10, -10, BASE_W + 20, BASE_H + 20);
+  ctx.fillStyle = PAL.water;
+  ctx.globalAlpha = 0.85;
+  ctx.fillRect(-10, -10, BASE_W + 20, BASE_H + 20);
+  ctx.globalAlpha = 1;
+
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  var wobble = Math.sin(performance.now() / 180) * 3 * (1 - loseSlowmo);
+  ctx.font = 'bold 30px "Courier New", monospace';
+  ctx.fillStyle = PAL.cream;
+  ctx.fillText('GLUG.', BASE_W / 2 + wobble, 90);
+
+  ctx.font = '12px "Courier New", monospace';
+  ctx.fillText('SCORE: ' + score, BASE_W / 2, 130);
+  ctx.fillText('MAX FLOW: x' + maxFlow, BASE_W / 2, 145);
+
+  if (loseSlowmo > 0.5) {
+    ctx.font = 'bold 13px "Courier New", monospace';
+    ctx.fillText('TAP / CLICK / PRESS TO RETRY', BASE_W / 2, 175);
+  }
+  ctx.textAlign = 'left';
+  ctx.restore();
+}
+
+// ---------- Restart handling on win/lose ----------
+function handleRestartGesture() {
+  if (state === STATE.WIN || state === STATE.LOSE) {
+    if (state === STATE.LOSE && loseSlowmo < 0.5) return; // avoid instant-skip
+    restartGame();
+  }
+}
+window.addEventListener('keydown', function (e) { handleRestartGesture(); });
+canvas.addEventListener('touchstart', function () { handleRestartGesture(); }, { passive: true });
+canvas.addEventListener('mousedown', function () { handleRestartGesture(); });
+
+function restartGame() {
+  try {
+    audio.pause();
+    audio.currentTime = 0;
+  } catch (e) {}
+  gestureHandled = false;
+  state = STATE.TITLE;
+  jumpPressed = false; whackPressed = false;
+  audioStarted = false;
+  particlePool.forEach(function (p) { p.active = false; });
+  resetRun();
+}
+
+// ---------- Main loop (delta-capped rAF) ----------
+function frame(now) {
+  if (!lastFrameTime) lastFrameTime = now;
+  var dt = (now - lastFrameTime) / 1000;
+  lastFrameTime = now;
+  if (dt > MAX_DT) dt = MAX_DT;
+  if (dt < 0) dt = 0;
+  update(dt);
+  requestAnimationFrame(frame);
+}
+
+resetRun();
+requestAnimationFrame(frame);
+
+// initial render so title screen shows before first tick
+renderFrame(0);
+
+})();
+</script>
+</body>
+</html>
