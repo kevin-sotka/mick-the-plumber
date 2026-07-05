@@ -7,46 +7,54 @@
 <style>
   html, body {
     margin: 0; padding: 0; width: 100%; height: 100%;
-    background: #0E1B2C;
+    background: #0b1420;
     overflow: hidden;
-    font-family: 'Courier New', monospace;
+    font-family: 'Courier New', ui-monospace, monospace;
     touch-action: none;
     -webkit-user-select: none; user-select: none;
     -webkit-touch-callout: none;
+    -webkit-tap-highlight-color: transparent;
   }
   #wrap {
     position: fixed; inset: 0;
     display: flex; align-items: center; justify-content: center;
-    background: #0E1B2C;
+    background: radial-gradient(circle at 50% 40%, #16273b 0%, #0b1420 100%);
   }
-  canvas {
+  canvas#game {
     image-rendering: pixelated;
     image-rendering: -moz-crisp-edges;
     image-rendering: crisp-edges;
-    background: #0E1B2C;
+    background: #0b1420;
     touch-action: none;
-    max-width: 100vw;
-    max-height: 100vh;
+    display: block;
   }
-  #muteBtn {
-    position: fixed;
-    top: 10px; right: 10px;
-    width: 44px; height: 44px;
-    background: rgba(14,27,44,0.8);
-    border: 2px solid #F4E9D8;
-    color: #F4E9D8;
+  /* On-screen touch controls (created by JS; shown only on touch devices) */
+  #touch { position: fixed; inset: 0; z-index: 15; pointer-events: none; display: none; }
+  #touch.on { display: block; }
+  .tbtn {
+    position: fixed; pointer-events: auto;
+    background: rgba(20,34,52,0.42);
+    border: 2px solid rgba(244,233,216,0.55);
+    color: #f4e9d8;
+    display: flex; align-items: center; justify-content: center;
+    font-family: inherit; font-weight: bold;
+    border-radius: 14px;
+    touch-action: none; user-select: none;
+    box-shadow: 0 3px 10px rgba(0,0,0,0.35);
+  }
+  .tbtn.round { border-radius: 50%; }
+  .tbtn.press { background: rgba(90,197,79,0.5); border-color: #8ce04b; }
+  #topbtns { position: fixed; top: 8px; right: 8px; z-index: 20; display: flex; gap: 8px; }
+  .cornerbtn {
+    width: 42px; height: 42px;
+    background: rgba(20,34,52,0.82);
+    border: 2px solid #f4e9d8;
+    color: #f4e9d8;
     font-size: 20px;
-    border-radius: 6px;
-    z-index: 20;
+    border-radius: 8px;
     display: flex; align-items: center; justify-content: center;
     cursor: pointer;
     touch-action: manipulation;
-  }
-  #fallbackMsg {
-    position: fixed;
-    bottom: 6px; left: 50%; transform: translateX(-50%);
-    color: #F4E9D8; font-size: 11px; opacity: 0.8;
-    z-index: 20; display: none; text-align: center; width: 90%;
   }
 </style>
 </head>
@@ -54,1392 +62,3135 @@
 <div id="wrap">
   <canvas id="game"></canvas>
 </div>
-<button id="muteBtn">&#128266;</button>
-<div id="fallbackMsg"></div>
+<div id="topbtns">
+  <button id="pauseBtn" class="cornerbtn" title="Pause">&#9208;</button>
+  <button id="muteBtn" class="cornerbtn" title="Mute">&#128266;</button>
+</div>
+<div id="touch"></div>
+<audio id="bgm" src="./song.mp3" loop preload="auto"></audio>
 <script>
+"use strict";
+/* =====================================================================
+   MICK THE PLUMBER: PIPE PANIC  (v2 — SMB3-inspired platformer rebuild)
+   Single self-contained file. Vanilla Canvas. Only external asset: song.mp3
+   ===================================================================== */
 (function () {
-'use strict';
 
-/* =========================================================
-   MICK THE PLUMBER: PIPE PANIC
-   Single-file vanilla Canvas game.
-   ========================================================= */
+/* ---------------------------------------------------------------
+   0. CONSTANTS
+   --------------------------------------------------------------- */
+var TILE = 32;
+var BASE_W = 480, BASE_H = 270;      // internal render resolution (16:9)
+var GAME = {}; // populated below; exposed for headless tests
 
-// ---------- Canvas / DOM setup ----------
-var canvas = document.getElementById('game');
-var ctx = canvas.getContext('2d', { alpha: false });
-ctx.imageSmoothingEnabled = false;
-var muteBtn = document.getElementById('muteBtn');
-var fallbackMsg = document.getElementById('fallbackMsg');
-
-var BASE_W = 384, BASE_H = 216; // internal render resolution (16:9), scaled to fit
-canvas.width = BASE_W;
-canvas.height = BASE_H;
-
-function resize() {
-  var scale = Math.min(window.innerWidth / BASE_W, window.innerHeight / BASE_H);
-  scale = Math.max(scale, 1);
-  var flooredScale = Math.floor(scale);
-  if (flooredScale < 1) flooredScale = scale; // allow fractional on small phones
-  var useScale = window.innerWidth < 500 ? scale : (flooredScale >= 1 ? flooredScale : scale);
-  canvas.style.width = (BASE_W * useScale) + 'px';
-  canvas.style.height = (BASE_H * useScale) + 'px';
-}
-window.addEventListener('resize', resize);
-resize();
-
-// ---------- Palette ----------
-var PAL = {
-  teal: '#1F6F6B',
-  navy: '#0E1B2C',
-  copper: '#B87333',
-  rust: '#8C3B1F',
-  brick: '#5A3A2E',
-  slime: '#8CE04B',
-  water: '#2E86AB',
-  cream: '#F4E9D8',
-  // extra derived shades for shading pixel art
-  tealDark: '#123F3D',
-  tealLight: '#2E9C96',
-  skin: '#E8B487',
-  skinDark: '#C08A5C',
-  mustache: '#3B2A20',
-  boot: '#2A2118',
-  bootDark: '#181310',
-  metal: '#D8D8D8',
-  metalDark: '#8A8A8A',
-  white: '#FFFFFF',
-  black: '#000000',
-  orange: '#E08A2E',
-  orangeDark: '#B4661C',
-  waterLight: '#4FA8D8',
-  waterFoam: '#CFEFF7',
-  steam: '#E8E8E8',
-  spark: '#FFE066',
-  brickDark: '#3E281F',
-  slimeDark: '#5E9E30'
+// Physics (binding — from GDD)
+var PHYS = {
+  WALK_ACCEL: 900,
+  WALK_MAX: 160,
+  RUN_MAX: 280,
+  RUN_RAMP: 1.0,          // seconds of sustained run to reach RUN_MAX (P-meter)
+  FRICTION: 1400,
+  SKID_THRESH: 200,
+  SKID_DECEL: 2200,
+  GRAVITY: 2600,
+  JUMP_GRAV: 1500,        // reduced gravity while jump held & rising
+  JUMP_V_WALK: -520,
+  JUMP_V_RUN: -580,
+  TERMINAL: 900,
+  COYOTE: 0.090,
+  JUMP_BUFFER: 0.120,
+  SQUASH: 0.080,
+  STOMP_BOUNCE: -400,
+  DUCK_H: 28,
+  STAND_H: 44,            // Mick collision box height standing (sprite is 48 tall, feet padding)
+  BODY_W: 20,
+  SLIDE_TIME: 0.30,
+  IFRAME: 1.2,
+  KNOCK_X: 180,
+  KNOCK_Y: -300,
+  BPM: 92
 };
 
-// ---------- Pixel sprite framework ----------
-// Each sprite is an array of strings (rows), one char per pixel.
-// '.' = transparent. Other chars map via a palette dict.
-function buildSprite(rows, map) {
-  var h = rows.length, w = rows[0].length;
-  var off = document.createElement('canvas');
-  off.width = w; off.height = h;
-  var octx = off.getContext('2d');
-  octx.imageSmoothingEnabled = false;
-  var imgData = octx.createImageData(w, h);
-  for (var y = 0; y < h; y++) {
-    var row = rows[y];
-    for (var x = 0; x < w; x++) {
-      var ch = row[x];
-      var idx = (y * w + x) * 4;
-      if (ch === '.' || ch === undefined) {
-        imgData.data[idx + 3] = 0;
-        continue;
+var DT_CAP = 1/30;        // never integrate more than this per step
+var SUBSTEP_SPEED = 240;  // px/s above which we substep
+
+/* ---------------------------------------------------------------
+   1. PALETTE
+   --------------------------------------------------------------- */
+var C = {
+  // stone
+  stoneLo:'#4b483f', stone:'#6e6a5e', stoneHi:'#8a8576', stoneDk:'#3a382f',
+  mortar:'#2c2a24',
+  moss:'#4e6b32', mossHi:'#6f8f45',
+  wet:'#33485a',
+  // steel
+  steelLo:'#5c6774', steel:'#8b98a6', steelHi:'#b3bec9', steelDk:'#3f4954',
+  rust:'#8a5a34', rustHi:'#b57a49',
+  rivet:'#c9d2db',
+  // pipes
+  copper:'#b3703a', copperHi:'#e0a05e', copperDk:'#6e4222',
+  pipeSteel:'#7d8896',
+  // slime / accents
+  slime:'#5ac54f', slimeHi:'#8ce04b', slimeDk:'#3a8e34',
+  // water
+  water:'#2e86ab', waterHi:'#57b6d6', waterDeep:'#1c5570', foam:'#dff3fb',
+  // lamp
+  lamp:'#ffd27a', lampGlow:'#ffbe57',
+  // mick
+  overall:'#2f8f9e', overallHi:'#43b4c4', overallDk:'#1d6470',
+  cap:'#e8792e', capHi:'#ffa14d',
+  skin:'#e0a878', skinDk:'#b6814f',
+  boot:'#3a2e26', bootHi:'#5a4638',
+  wrench:'#c9c9c9', wrenchHi:'#eeeeee', wrenchDk:'#7d7d7d',
+  stache:'#4a2f1a',
+  // ui
+  ink:'#f4e9d8', inkDk:'#1a2636', panel:'#122033', panelHi:'#20344c',
+  heart:'#e0435a', heartHi:'#ff7a8c',
+  gold:'#ffce54', goldHi:'#ffe89b',
+  red:'#d84b4b', blue:'#4b7fd8', brass:'#d9a441',
+  bg0:'#0e1c2c', bg1:'#16283c', bg2:'#22384f', bgFar:'#0a1622'
+};
+
+/* ---------------------------------------------------------------
+   2. PIXEL ART ENGINE — draw pixel arrays to offscreen atlases
+   --------------------------------------------------------------- */
+function makeCanvas(w,h){
+  var c = (typeof document!=='undefined' && document.createElement)
+    ? document.createElement('canvas')
+    : { width:w, height:h, getContext:function(){ return stubCtx(); } };
+  c.width=w; c.height=h;
+  return c;
+}
+// A minimal 2D context stub so art building doesn't crash in headless node tests.
+function stubCtx(){
+  var noop=function(){};
+  return {
+    fillStyle:'', strokeStyle:'', globalAlpha:1, lineWidth:1, font:'', textAlign:'', textBaseline:'',
+    imageSmoothingEnabled:true, lineCap:'', lineJoin:'', shadowBlur:0, shadowColor:'',
+    fillRect:noop, strokeRect:noop, clearRect:noop, beginPath:noop, closePath:noop,
+    moveTo:noop, lineTo:noop, arc:noop, arcTo:noop, ellipse:noop, rect:noop,
+    fill:noop, stroke:noop, save:noop, restore:noop, translate:noop, scale:noop,
+    rotate:noop, drawImage:noop, fillText:noop, strokeText:noop, createLinearGradient:function(){return{addColorStop:noop};},
+    createRadialGradient:function(){return{addColorStop:noop};}, setTransform:noop, clip:noop,
+    quadraticCurveTo:noop, bezierCurveTo:noop, getImageData:function(){return{data:[]};}, putImageData:noop,
+    measureText:function(){return{width:0};}
+  };
+}
+
+// px(ctx,x,y,w,h,color) — draw a filled block at pixel-grid coords with scale factor s.
+function pxRect(g,x,y,w,h,col){ g.fillStyle=col; g.fillRect(x,y,w,h); }
+
+/* Render a small ASCII pixmap (array of strings) using a color legend.
+   Each char = one pixel, ' ' or '.' = transparent. Scale is applied. */
+function drawPixmap(g, rows, legend, ox, oy, s){
+  s = s||1;
+  for(var y=0;y<rows.length;y++){
+    var row=rows[y];
+    for(var x=0;x<row.length;x++){
+      var ch=row[x];
+      if(ch===' '||ch==='.'||ch==='_') continue;
+      var col=legend[ch];
+      if(!col) continue;
+      g.fillStyle=col;
+      g.fillRect(ox+x*s, oy+y*s, s, s);
+    }
+  }
+}
+
+/* ---------------------------------------------------------------
+   3. TILE ATLAS — 32px tiles with variants, built procedurally
+   --------------------------------------------------------------- */
+var ATLAS = {}; // name -> canvas
+
+function rnd(seed){ // deterministic pseudo-random for tile texture
+  var x = Math.sin(seed*127.1+311.7)*43758.5453;
+  return x - Math.floor(x);
+}
+
+function buildStoneTile(name, base, hi, lo, opts){
+  opts = opts||{};
+  var c=makeCanvas(TILE,TILE), g=c.getContext('2d');
+  // mortar background
+  pxRect(g,0,0,TILE,TILE,C.mortar);
+  // two-brick-per-row masonry with offset
+  var bh=8, seedbase = opts.seed||1;
+  for(var by=0, r=0; by<TILE; by+=bh, r++){
+    var offset = (r%2===0)?0:-16;
+    for(var bx=offset; bx<TILE; bx+=16){
+      var bw=15;
+      var s = seedbase + r*7 + (bx+64);
+      var shade = rnd(s);
+      var col = base;
+      if(shade>0.72) col=hi; else if(shade<0.3) col=lo;
+      pxRect(g, bx+1, by+1, Math.min(bw,TILE-bx-1)- ( (bx<0)?(-bx):1 ) +1, bh-2, col);
+      // clamp draw within tile
+    }
+  }
+  // redraw cleanly with clipping to avoid overflow artifacts
+  g.clearRect(0,0,TILE,TILE);
+  pxRect(g,0,0,TILE,TILE,C.mortar);
+  for(var by2=0, rr=0; by2<TILE; by2+=bh, rr++){
+    var off2=(rr%2===0)?0:8;
+    for(var bx2=-off2; bx2<TILE; bx2+=16){
+      var s2=seedbase+rr*13+(bx2+80);
+      var shade2=rnd(s2);
+      var col2=base;
+      if(shade2>0.74) col2=hi; else if(shade2<0.30) col2=lo;
+      var dx=Math.max(0,bx2+1), dw=Math.min(TILE,bx2+15)-dx;
+      if(dw>0){ pxRect(g,dx,by2+1,dw,bh-2,col2); }
+      // per-brick speckle
+      var sp=rnd(s2*3.1);
+      if(sp>0.6 && dw>3){ pxRect(g, dx+Math.floor(sp*(dw-2)), by2+1+Math.floor(rnd(s2*7)*(bh-3)),1,1, (sp>0.8?hi:lo)); }
+    }
+  }
+  // variant overlays
+  if(opts.crack){
+    // diagonal crack
+    var cx=8+Math.floor(rnd(seedbase)*8);
+    for(var i=0;i<20;i++){
+      var yy=6+i, xx=cx+Math.floor(Math.sin(i*0.7)*3)+Math.floor(i*0.4);
+      if(xx>=0&&xx<TILE&&yy<TILE){ pxRect(g,xx,yy,1,1,C.stoneDk); pxRect(g,xx+1,yy,1,1,C.mortar); }
+    }
+  }
+  if(opts.moss){
+    for(var m=0;m<TILE;m+=1){
+      var mv=rnd(seedbase*2+m);
+      if(mv>0.55){
+        var mh=1+Math.floor(mv*3);
+        pxRect(g,m,TILE-mh,1,mh, mv>0.8?C.mossHi:C.moss);
       }
-      var hex = map[ch];
-      if (!hex) { imgData.data[idx + 3] = 0; continue; }
-      var r = parseInt(hex.slice(1, 3), 16);
-      var g = parseInt(hex.slice(3, 5), 16);
-      var b = parseInt(hex.slice(5, 7), 16);
-      imgData.data[idx] = r;
-      imgData.data[idx + 1] = g;
-      imgData.data[idx + 2] = b;
-      imgData.data[idx + 3] = 255;
+    }
+    // a few moss dabs mid-tile
+    for(var md=0;md<5;md++){
+      var mx=Math.floor(rnd(seedbase*5+md)*TILE), my=Math.floor(rnd(seedbase*9+md)*TILE);
+      pxRect(g,mx,my,2,2, C.moss);
     }
   }
-  octx.putImageData(imgData, 0, 0);
-  return off;
-}
-
-// Mick palette map (shared)
-var MICK_MAP = {
-  s: PAL.skin, k: PAL.skinDark, m: PAL.mustache,
-  t: PAL.teal, T: PAL.tealDark, l: PAL.tealLight,
-  o: PAL.orange, O: PAL.orangeDark,
-  b: PAL.boot, B: PAL.bootDark,
-  w: PAL.metal, W: PAL.metalDark,
-  e: PAL.black, // eyes
-  h: '#7A4A2A', // hair/sideburn
-  c: PAL.cream
-};
-
-// Mick: 16 wide x 24 tall, drawn facing right (runner moving right).
-// Run cycle frame 1 (contact pose)
-var MICK_RUN_1 = [
-  '......ooooo.....',
-  '.....ooooooo....',
-  '.....ossssso....',
-  '.....ossssso....',
-  '....ssssssss....',
-  '....smsssmss....',
-  '....smmmmss.....',
-  '....ssssss......',
-  '...ttttttttt....',
-  '..ttttttttttt...',
-  '..tTtttttttT....',
-  '..tttttttttt.w..',
-  '.oottttttoo.ww..',
-  '.oo......oo.ww..',
-  '.o........o.....',
-  '.bb......bb.....',
-  'bbb......bb.....',
-  'BBB......BB.....',
-  '................',
-  '................',
-  '................',
-  '................',
-  '................',
-  '................'
-];
-
-var MICK_RUN_2 = [
-  '......ooooo.....',
-  '.....ooooooo....',
-  '.....ossssso....',
-  '.....ossssso....',
-  '....ssssssss....',
-  '....smsssmss....',
-  '....smmmmss.....',
-  '....ssssss......',
-  '...ttttttttt....',
-  '..ttttttttttt...',
-  '..tTtttttttT....',
-  '..tttttttttt....',
-  '.oottttttoo.....',
-  '.oo......ooo....',
-  '.o........obb...',
-  '.b.......bbbb...',
-  'bb.......bbb....',
-  'BB.......BB.....',
-  '................',
-  '................',
-  '................',
-  '................',
-  '................',
-  '................'
-];
-
-var MICK_RUN_3 = [
-  '......ooooo.....',
-  '.....ooooooo....',
-  '.....ossssso....',
-  '.....ossssso....',
-  '....ssssssss....',
-  '....smsssmss....',
-  '....smmmmss.....',
-  '....ssssss......',
-  '...ttttttttt....',
-  '..ttttttttttt...',
-  '..tTtttttttT....',
-  '..tttttttttt....',
-  '.oottttttoo.....',
-  '.oo......oo.....',
-  'wo........o.....',
-  'ww.......bb.....',
-  '.w......bbb.....',
-  '........BBB.....',
-  '................',
-  '................',
-  '................',
-  '................',
-  '................',
-  '................'
-];
-
-var MICK_RUN_4 = [
-  '......ooooo.....',
-  '.....ooooooo....',
-  '.....ossssso....',
-  '.....ossssso....',
-  '....ssssssss....',
-  '....smsssmss....',
-  '....smmmmss.....',
-  '....ssssss......',
-  '...ttttttttt....',
-  '..ttttttttttt...',
-  '..tTtttttttT....',
-  '..tttttttttt....',
-  '.oottttttoo.....',
-  'oo......ooo.....',
-  'o........obb....',
-  '........bbbb....',
-  '.......bbb......',
-  '.......BB.......',
-  '................',
-  '................',
-  '................',
-  '................',
-  '................',
-  '................'
-];
-
-var MICK_JUMP = [
-  '......ooooo.....',
-  '.....ooooooo....',
-  '.....ossssso....',
-  '.....ossssso....',
-  '....ssssssss....',
-  '....smsssmss....',
-  '....smmmmss.....',
-  '....ssssss......',
-  '..wttttttttt....',
-  '.wwttttttttt....',
-  '..tTtttttttT....',
-  '..ttttttttttw...',
-  '.oobb...bboo.w..',
-  '.obb.....obb....',
-  '.bb.......bb....',
-  '.b.........b....',
-  '................',
-  '................',
-  '................',
-  '................',
-  '................',
-  '................',
-  '................',
-  '................'
-];
-
-var MICK_WHACK_1 = [
-  '......ooooo.....',
-  '.....ooooooo....',
-  '.....ossssso....',
-  '.....ossssso....',
-  '....ssssssss.w..',
-  '....smsssmss.ww.',
-  '....smmmmss..ww.',
-  '....ssssss..ww..',
-  '...ttttttttww...',
-  '..tttttttttWW...',
-  '..tTtttttttt....',
-  '..tttttttttt....',
-  '.oottttttoo.....',
-  '.oo......oo.....',
-  '.o........o.....',
-  '.bb......bb.....',
-  'bbb......bb.....',
-  'BBB......BB.....',
-  '................',
-  '................',
-  '................',
-  '................',
-  '................',
-  '................'
-];
-
-var MICK_WHACK_2 = [
-  '......ooooo.....',
-  '.....ooooooo....',
-  '.....ossssso.w..',
-  '.....ossssso.ww.',
-  '....ssssssswwWW.',
-  '....smsssmsswW..',
-  '....smmmmss.....',
-  '....ssssss......',
-  '...ttttttttt....',
-  '..ttttttttttt...',
-  '..tTtttttttT....',
-  '..tttttttttt....',
-  '.oottttttoo.....',
-  '.oo......oo.....',
-  '.o........o.....',
-  '.bb......bb.....',
-  'bbb......bb.....',
-  'BBB......BB.....',
-  '................',
-  '................',
-  '................',
-  '................',
-  '................',
-  '................'
-];
-
-var MICK_HITSTUN = [
-  '....ooooo.......',
-  '...ooooooo......',
-  '...ossssso......',
-  '...ossssso......',
-  '..ssssssss......',
-  '..smsssmss......',
-  '..smmmmss.......',
-  '..ssssss........',
-  '.ttttttttt......',
-  'ttttttttttt.....',
-  'tTtttttttT......',
-  'ttttttttttt.....',
-  'ottttttoo.......',
-  'o......oo.......',
-  '.......o.b......',
-  '......bb.b......',
-  '.....bb..b......',
-  '.....B...B......',
-  '................',
-  '................',
-  '................',
-  '................',
-  '................',
-  '................'
-];
-
-var PROP_MAP = {
-  p: PAL.copper, P: PAL.rust, w: PAL.waterLight, W: PAL.water,
-  f: PAL.waterFoam, g: PAL.slime, G: PAL.slimeDark,
-  s: PAL.steam, m: PAL.metalDark, M: PAL.metal, b: PAL.brick, B: PAL.brickDark
-};
-
-// Burst pipe: wall-mounted, spraying, 2 frames. 16x16.
-var PIPE_BURST_1 = [
-  '..BBBBBBBBBBBB..',
-  '.Bbbbbbbbbbbbb..',
-  '.Bbb.mmmm.bbb...',
-  '.Bbb.mPPm.bbb...',
-  '.Bbb.mPPm.bbb...',
-  '.Bbb.mPPm.bbb...',
-  '..s.f.mm.s......',
-  '.s.f..mm..f.s...',
-  's.f...mm...f.s..',
-  '.f....mm....f...',
-  '..f...mm...f....',
-  '...f..mm..f.....',
-  '....f.mm.f......',
-  '.....fmmf.......',
-  '......mm........',
-  '................'
-];
-
-var PIPE_BURST_2 = [
-  '..BBBBBBBBBBBB..',
-  '.Bbbbbbbbbbbbb..',
-  '.Bbb.mmmm.bbb...',
-  '.Bbb.mPPm.bbb...',
-  '.Bbb.mPPm.bbb...',
-  '.Bbb.mPPm.bbb...',
-  '...s..mm..s.....',
-  's..f..mm..f..s..',
-  '.f.....mm....f..',
-  '..f....mm...f...',
-  '...f...mm..f....',
-  '....f..mm.f.....',
-  '.....f.mm.......',
-  '......fmmf......',
-  '......mm........',
-  '................'
-];
-
-// Patched pipe (after successful whack)
-var PIPE_PATCHED = [
-  '..BBBBBBBBBBBB..',
-  '.Bbbbbbbbbbbbb..',
-  '.Bbb.mmmm.bbb...',
-  '.Bbb.mPPm.bbb...',
-  '.Bbb.mggm.bbb...',
-  '.Bbb.mPPm.bbb...',
-  '.Bbb..mm..bbb...',
-  '.Bbb..mm..bbb...',
-  '....b.mm.b......',
-  '....bb..bb......',
-  '......mm........',
-  '......mm........',
-  '................',
-  '................',
-  '................',
-  '................'
-];
-
-// Gunk blob, floor obstacle, 2-frame idle. 16x12.
-var GUNK_1 = [
-  '................',
-  '................',
-  '....GGGGGG......',
-  '..Gggggggggg....',
-  '.Gggg.gg.gggG...',
-  '.Gggggggggggg...',
-  '.Gggg.gg.gggG...',
-  '.Ggggggggggg....',
-  '..GGgggggGG.....',
-  '...GGGGGGG......',
-  '................',
-  '................'
-];
-
-var GUNK_2 = [
-  '................',
-  '................',
-  '.....GGGGG......',
-  '...Ggggggggg....',
-  '..Gggg.gg.ggG...',
-  '.Ggggggggggggg..',
-  '..Gggg.gg.ggG...',
-  '...Gggggggggg...',
-  '....GGgggGGG....',
-  '.....GGGGG......',
-  '................',
-  '................'
-];
-
-// Pre-render all sprites to offscreen canvases
-var SPR = {
-  mickRun: [
-    buildSprite(MICK_RUN_1, MICK_MAP),
-    buildSprite(MICK_RUN_2, MICK_MAP),
-    buildSprite(MICK_RUN_3, MICK_MAP),
-    buildSprite(MICK_RUN_4, MICK_MAP)
-  ],
-  mickJump: buildSprite(MICK_JUMP, MICK_MAP),
-  mickWhack: [
-    buildSprite(MICK_WHACK_1, MICK_MAP),
-    buildSprite(MICK_WHACK_2, MICK_MAP)
-  ],
-  mickHitstun: buildSprite(MICK_HITSTUN, MICK_MAP),
-  pipeBurst: [
-    buildSprite(PIPE_BURST_1, PROP_MAP),
-    buildSprite(PIPE_BURST_2, PROP_MAP)
-  ],
-  pipePatched: buildSprite(PIPE_PATCHED, PROP_MAP),
-  gunk: [
-    buildSprite(GUNK_1, PROP_MAP),
-    buildSprite(GUNK_2, PROP_MAP)
-  ]
-};
-
-var MICK_W = 16, MICK_H = 24;
-var PROP_W = 16, PROP_H = 16;
-var GUNK_W = 16, GUNK_H = 12;
-
-// ---------- Audio ----------
-var BPM = 92;
-var BEAT_SEC = 60 / BPM; // ~0.6522s
-var AUDIO_OFFSET = 0.046;
-var audio = new Audio();
-var audioReady = false;
-var audioFailed = false;
-var songDuration = 144; // fallback est. 2:24
-var isMuted = false;
-
-audio.src = './song.mp3';
-audio.preload = 'auto';
-audio.loop = false;
-
-audio.addEventListener('loadedmetadata', function () {
-  if (isFinite(audio.duration) && audio.duration > 0) {
-    songDuration = audio.duration;
+  if(opts.wet){
+    // darker, glossy: overlay translucent wet sheen
+    g.globalAlpha=0.32; pxRect(g,0,0,TILE,TILE,C.wet); g.globalAlpha=1;
+    // highlight streaks
+    for(var w=0;w<TILE;w+=1){
+      if(rnd(seedbase*7+w)>0.85){ g.globalAlpha=0.5; pxRect(g,w,2+Math.floor(rnd(w)*4),1,6,C.steelHi); g.globalAlpha=1; }
+    }
   }
-  audioReady = true;
-});
-audio.addEventListener('error', function () {
-  audioFailed = true;
-  showFallback('Audio failed to load — playing silently. Timing uses an internal clock.');
-});
-
-function showFallback(msg) {
-  fallbackMsg.textContent = msg;
-  fallbackMsg.style.display = 'block';
-  setTimeout(function () { fallbackMsg.style.display = 'none'; }, 4000);
+  // top rim light
+  g.globalAlpha=0.25; pxRect(g,0,0,TILE,1,C.stoneHi); g.globalAlpha=1;
+  ATLAS[name]=c;
 }
 
-// Silent clock fallback: if audio fails, we drive timing off performance.now()
-var silentClockStart = 0;
-function getSongTime() {
-  if (audioFailed || (!audioReady && audioStarted)) {
-    return (performance.now() - silentClockStart) / 1000;
+function buildSteelTile(name, base, hi, lo, opts){
+  opts=opts||{};
+  var c=makeCanvas(TILE,TILE), g=c.getContext('2d');
+  pxRect(g,0,0,TILE,TILE, base);
+  // horizontal plate seams
+  pxRect(g,0,0,TILE,2, hi);
+  pxRect(g,0,TILE-2,TILE,2, lo);
+  pxRect(g,0,15,TILE,1, lo);
+  pxRect(g,0,16,TILE,1, hi);
+  // vertical subtle
+  pxRect(g,0,0,1,TILE, lo);
+  pxRect(g,TILE-1,0,1,TILE, lo);
+  // rivets in corners + mid
+  var rv=[[3,3],[TILE-4,3],[3,TILE-4],[TILE-4,TILE-4],[3,17],[TILE-4,17]];
+  for(var i=0;i<rv.length;i++){
+    pxRect(g,rv[i][0],rv[i][1],2,2,C.rivet);
+    pxRect(g,rv[i][0],rv[i][1],1,1,C.steelHi);
   }
-  return audio.currentTime;
-}
-
-var audioStarted = false;
-function startAudio() {
-  if (audioStarted) return;
-  audioStarted = true;
-  silentClockStart = performance.now();
-  if (audioFailed) return;
-  var p = audio.play();
-  if (p && p.catch) {
-    p.catch(function () {
-      audioFailed = true;
-      showFallback('Audio blocked — playing silently.');
-    });
+  if(opts.rust){
+    for(var r=0;r<40;r++){
+      var rx=Math.floor(rnd(r*1.7+1)*TILE), ry=Math.floor(rnd(r*2.3+2)*TILE);
+      var rv2=rnd(r*3.1);
+      pxRect(g,rx,ry,1+Math.floor(rv2*2),1+Math.floor(rv2*2), rv2>0.6?C.rustHi:C.rust);
+    }
+    // rust streaks from rivets
+    for(var s=0;s<rv.length;s++){
+      if(rnd(s*5)>0.4){ g.globalAlpha=0.6; pxRect(g,rv[s][0],rv[s][1]+2,1,4+Math.floor(rnd(s)*6),C.rust); g.globalAlpha=1; }
+    }
   }
-}
-
-muteBtn.addEventListener('click', function (e) {
-  e.stopPropagation();
-  isMuted = !isMuted;
-  audio.muted = isMuted;
-  muteBtn.innerHTML = isMuted ? '&#128263;' : '&#128266;';
-});
-
-// ---------- Input ----------
-var keys = {};
-var jumpPressed = false, whackPressed = false;
-
-function onJump() { jumpPressed = true; }
-function onWhack() { whackPressed = true; }
-
-var keydownHandler = function (e) {
-  if (['Space', 'KeyW', 'KeyJ', 'Enter'].indexOf(e.code) !== -1) e.preventDefault();
-  if (e.code === 'Space' || e.code === 'KeyW' || e.code === 'ArrowUp') {
-    onJump();
-  } else if (e.code === 'KeyJ' || e.code === 'Enter') {
-    onWhack();
+  if(opts.vent){
+    // horizontal vent slots
+    for(var v=8;v<TILE-6;v+=5){
+      pxRect(g,6,v,TILE-12,2, C.steelDk);
+      pxRect(g,6,v,TILE-12,1, C.inkDk);
+      pxRect(g,6,v+2,TILE-12,1, C.steelHi);
+    }
   }
-  handleGestureStart();
-};
-window.addEventListener('keydown', keydownHandler);
+  ATLAS[name]=c;
+}
 
-var activeTouches = {};
-function touchZoneHandler(e) {
-  e.preventDefault();
-  handleGestureStart();
-  var touches = e.changedTouches;
-  for (var i = 0; i < touches.length; i++) {
-    var t = touches[i];
-    var rect = canvas.getBoundingClientRect();
-    var x = t.clientX - rect.left;
-    var half = rect.width / 2;
-    if (x < half) { onJump(); } else { onWhack(); }
+function buildGrateTile(){
+  var c=makeCanvas(TILE,TILE), g=c.getContext('2d');
+  pxRect(g,0,0,TILE,TILE, C.inkDk);
+  pxRect(g,0,0,TILE,3, C.steelDk);
+  // bars
+  for(var x=2;x<TILE;x+=6){ pxRect(g,x,0,3,TILE, C.steel); pxRect(g,x,0,1,TILE, C.steelHi); pxRect(g,x+2,0,1,TILE,C.steelDk); }
+  pxRect(g,0,0,TILE,2, C.steelHi);
+  pxRect(g,0,TILE-2,TILE,2, C.steelDk);
+  ATLAS['grate']=c;
+}
+
+function buildCrumbleTile(){
+  var c=makeCanvas(TILE,TILE), g=c.getContext('2d');
+  pxRect(g,0,0,TILE,TILE, C.rust);
+  pxRect(g,0,0,TILE,3, C.rustHi);
+  for(var i=0;i<50;i++){
+    var x=Math.floor(rnd(i*1.3)*TILE), y=Math.floor(rnd(i*2.7)*TILE);
+    pxRect(g,x,y,1+Math.floor(rnd(i)*2),1, rnd(i*5)>0.5?C.rustHi:C.steelDk);
   }
+  // broken holes
+  pxRect(g,7,10,4,3,C.inkDk); pxRect(g,20,18,5,4,C.inkDk); pxRect(g,14,24,3,3,C.inkDk);
+  pxRect(g,0,TILE-3,TILE,3, C.steelDk);
+  ATLAS['crumble']=c;
 }
-canvas.addEventListener('touchstart', touchZoneHandler, { passive: false });
 
-function mouseZoneHandler(e) {
-  handleGestureStart();
-  var rect = canvas.getBoundingClientRect();
-  var x = e.clientX - rect.left;
-  var half = rect.width / 2;
-  if (x < half) { onJump(); } else { onWhack(); }
+function buildPipeTiles(){
+  // straight horizontal copper pipe (background deco / solid)
+  var c=makeCanvas(TILE,TILE), g=c.getContext('2d');
+  pxRect(g,0,0,TILE,TILE, C.bg1);
+  pxRect(g,0,8,TILE,16, C.copperDk);
+  pxRect(g,0,9,TILE,14, C.copper);
+  pxRect(g,0,10,TILE,4, C.copperHi);
+  pxRect(g,0,21,TILE,2, C.copperDk);
+  // flanges
+  pxRect(g,0,6,3,20, C.copperDk); pxRect(g,1,7,2,18,C.copper);
+  pxRect(g,TILE-3,6,3,20, C.copperDk); pxRect(g,TILE-2,7,2,18,C.copper);
+  ATLAS['pipeH']=c;
+
+  // vertical steel pipe
+  var c2=makeCanvas(TILE,TILE), g2=c2.getContext('2d');
+  pxRect(g2,0,0,TILE,TILE, C.bg1);
+  pxRect(g2,8,0,16,TILE, C.steelDk);
+  pxRect(g2,9,0,14,TILE, C.pipeSteel);
+  pxRect(g2,10,0,4,TILE, C.steelHi);
+  pxRect(g2,21,0,2,TILE, C.steelDk);
+  ATLAS['pipeV']=c2;
 }
-canvas.addEventListener('mousedown', mouseZoneHandler);
 
-// prevent scroll/selection on touch globally within canvas area
-document.addEventListener('touchmove', function (e) {
-  if (e.target === canvas) e.preventDefault();
-}, { passive: false });
+function buildBgArch(){
+  // A far background arch silhouette tile (parallax layer 0)
+  var c=makeCanvas(TILE*4,TILE*4), g=c.getContext('2d');
+  g.clearRect(0,0,TILE*4,TILE*4);
+  // arch
+  g.fillStyle=C.bgFar;
+  g.beginPath();
+  g.moveTo(8,TILE*4);
+  g.lineTo(8,40);
+  g.arc(TILE*2,40,TILE*2-8,Math.PI,0,false);
+  g.lineTo(TILE*4-8,TILE*4);
+  g.closePath();
+  g.fill();
+  // inner darker
+  g.fillStyle=C.bg0;
+  g.beginPath();
+  g.moveTo(16,TILE*4);
+  g.lineTo(16,46);
+  g.arc(TILE*2,46,TILE*2-16,Math.PI,0,false);
+  g.lineTo(TILE*4-16,TILE*4);
+  g.closePath();
+  g.fill();
+  ATLAS['arch']=c;
+}
 
-var gestureHandled = false;
-function handleGestureStart() {
-  if (gestureHandled) return;
-  if (state === STATE.TITLE) {
-    gestureHandled = true;
-    startAudio();
-    state = STATE.PLAY;
-    resetRun();
+function buildChain(){
+  var c=makeCanvas(8,TILE), g=c.getContext('2d');
+  for(var y=0;y<TILE;y+=6){
+    g.strokeStyle=C.steelDk; g.lineWidth=2;
+    g.beginPath(); g.ellipse(4,y+3,2.5,3,0,0,Math.PI*2); g.stroke();
+    g.strokeStyle=C.steel; g.lineWidth=1;
+    g.beginPath(); g.ellipse(4,y+3,2.5,3,0,0,Math.PI*2); g.stroke();
   }
+  ATLAS['chain']=c;
 }
 
-// ---------- Game constants ----------
-var GROUND_Y = 168; // y coordinate of floor line in base coords
-var GRAVITY = 1400;
-var JUMP_VEL = -420;
-var BASE_SCROLL_SPEED = 110; // px/sec
-var SPEED_RAMP_INTERVAL = 30; // seconds
-var SPEED_RAMP_MULT = 1.08;
-var HIT_WINDOW = 0.150; // seconds, ±150ms
-var FLOW_CAP = 8;
-var WATER_NOTCHES = 8; // number of misses to fill from empty to top
-var MICK_X = 70; // fixed screen x position of Mick
+function buildLamp(){
+  var c=makeCanvas(TILE,TILE), g=c.getContext('2d');
+  // bracket
+  pxRect(g,14,2,4,6,C.steelDk);
+  // lamp housing
+  pxRect(g,9,7,14,14,C.steelDk);
+  pxRect(g,10,8,12,12,C.inkDk);
+  pxRect(g,12,10,8,8,C.lamp);
+  pxRect(g,13,11,6,6,C.lampGlow);
+  pxRect(g,14,12,4,3,C.ink);
+  ATLAS['lamp']=c;
+}
 
-// ---------- Game state ----------
-var STATE = { TITLE: 0, PLAY: 1, WIN: 2, LOSE: 3 };
-var state = STATE.TITLE;
+/* ---------------------------------------------------------------
+   4. MICK SPRITE ATLAS (32x48 frames)
+   --------------------------------------------------------------- */
+var MICK = {}; // name -> canvas (32x48)
 
-var mick, obstacles, particles, floaters;
-var score, flow, maxFlow, waterLevel, patchedCount, totalPipes, elapsedGameTime;
-var speedMult, lastRampBucket;
-var beatGrid, nextBeatIndex;
-var screenShake, hitstopTimer, timeScale;
-var loseSlowmo;
-var confetti;
-var wipedBrow;
-
-function resetRun() {
-  mick = {
-    y: 0, vy: 0, onGround: true,
-    anim: 'run', animFrame: 0, animTimer: 0,
-    whacking: false, whackTimer: 0,
-    hitstun: 0,
-    squash: 0, // squash/stretch factor timer
-    facing: 1
+function buildMick(){
+  // Legend for Mick pixmaps
+  var L = {
+    o:C.overall, O:C.overallHi, d:C.overallDk,
+    s:C.skin, k:C.skinDk,
+    c:C.cap, C:C.capHi,
+    b:C.boot, B:C.bootHi,
+    w:C.wrench, W:C.wrenchHi, x:C.wrenchDk,
+    m:C.stache, e:'#22303c', l:'#ffffff'
   };
-  obstacles = [];
-  particles = [];
-  floaters = [];
-  confetti = [];
-  score = 0;
-  flow = 0;
-  maxFlow = 0;
-  waterLevel = 0;
-  patchedCount = 0;
-  totalPipes = 0;
-  elapsedGameTime = 0;
-  speedMult = 1;
-  lastRampBucket = 0;
-  nextBeatIndex = 0;
-  screenShake = 0;
-  hitstopTimer = 0;
-  timeScale = 1;
-  loseSlowmo = 0;
-  wipedBrow = false;
-  beatGrid = buildBeatGrid(songDuration);
+  // Each frame is 16 wide x 24 tall then scaled x2 -> 32x48. Build at scale 2.
+  var S=2;
+  function frame(rows){
+    var c=makeCanvas(32,48), g=c.getContext('2d');
+    drawPixmap(g, rows, L, 0, 0, S);
+    return c;
+  }
+  // 16x24 grid. Rows top(hat) to bottom(boots).
+  // We'll keep a consistent body and vary limbs/wrench.
+  // idle 1
+  MICK.idle0 = frame([
+    "                ",
+    "     ccccc      ",
+    "    cCCCCCc     ",
+    "   cCcccccCc    ",
+    "    sssssss     ",
+    "   smsssms s    ",
+    "   sseesee s    ",
+    "   ssmmmmm s    ",
+    "    smmmmm      ",
+    "    ksssssk     ",
+    "   dooooood     ",
+    "  dOoooooOod    ",
+    "  dOoooooOod    ",
+    "  doOoooOood    ",
+    "   dooooood     ",
+    "   dosssod      ",
+    "   sd   ds      ",
+    "   sd   ds      ",
+    "   kd   dk      ",
+    "  bbb   bbb     ",
+    " BbbbB BbbbB    ",
+    " bbbbb bbbbb    ",
+    "                ",
+    "                "
+  ]);
+  // idle 1 (breath — cap up 1px done via same, tiny arm shift)
+  MICK.idle1 = frame([
+    "                ",
+    "     ccccc      ",
+    "    cCCCCCc     ",
+    "   cCcccccCc    ",
+    "    sssssss     ",
+    "   smsssms s    ",
+    "   sseesee s    ",
+    "   ssmmmmm s    ",
+    "    smmmmm      ",
+    "    ksssssk     ",
+    "   dooooood     ",
+    "  dOoooooOod    ",
+    "  dOoooooOod    ",
+    "  doOoooOood    ",
+    "   dooooood     ",
+    "   dosssod      ",
+    "   sd   ds      ",
+    "   sd   ds      ",
+    "   kd   dk      ",
+    "   bbb bbb      ",
+    "  BbbbBbbbB     ",
+    "  bbbbbbbbb     ",
+    "                ",
+    "                "
+  ]);
+  // walk frames (4) — legs alternate
+  function walkBody(legL, legR){
+    return [
+    "                ",
+    "     ccccc      ",
+    "    cCCCCCc     ",
+    "   cCcccccCc    ",
+    "    sssssss     ",
+    "   smsssms s    ",
+    "   sseesee s    ",
+    "   ssmmmmm s    ",
+    "    smmmmm      ",
+    "    ksssssk     ",
+    "   dooooood     ",
+    "  dOoooooOod    ",
+    "  dOoooooOod    ",
+    "  doOoooOood    ",
+    "   dooooood     ",
+    "   dosssod      "
+    ].concat(legL, legR);
+  }
+  MICK.walk0=frame(walkBody(
+    ["   sd   ds      ","   sd    ds     ","   kd    dk     ","  bbb    bb     "],
+    [" BbbbB   bbbB   ","                ","                ","                "]));
+  MICK.walk1=frame(walkBody(
+    ["    sd ds       ","    sddss       ","    kddk        ","   bbbb         "],
+    ["  BbbbbB        ","                ","                ","                "]));
+  MICK.walk2=frame(walkBody(
+    ["   ds   sd      ","  ds    sd      ","  dk    ks      ","  bb    bbb     "],
+    [" bbbB   BbbbB   ","                ","                ","                "]));
+  MICK.walk3=frame(walkBody(
+    ["      ds sd     ","      ssdds     ","       kddk     ","       bbbb     "],
+    ["      BbbbbB    ","                ","                ","                "]));
+  // run frames (4) — leaning forward; head shifts right, wrench trailing
+  function runBody(legs){
+    return [
+    "                ",
+    "      ccccc     ",
+    "     cCCCCCc    ",
+    "    cCcccccCc   ",
+    "     sssssss    ",
+    "    smsssms s   ",
+    "    sseesee s   ",
+    "    ssmmmmm s   ",
+    "     smmmmm     ",
+    "    ksssssk     ",
+    "   doooooodd    ",
+    "  dOoooooOodd   ",
+    "  dOoooooOod    ",
+    "  doOoooOood    ",
+    "   dooooood     ",
+    "   dosssod      "
+    ].concat(legs);
+  }
+  MICK.run0=frame(runBody(["  sd    ds      "," sd      ds     "," bb      bbb    ","bbb      BbbB   ","                ","                ","                ","                "]));
+  MICK.run1=frame(runBody(["   sddds        ","   sd ds        ","  bbb bbb       "," BbbB BbbB      ","                ","                ","                ","                "]));
+  MICK.run2=frame(runBody(["    ds  sd      ","   ds    sd     ","  bbb    bb     "," BbbB    bbbB   ","                ","                ","                ","                "]));
+  MICK.run3=frame(runBody(["   sddds        ","  sd   ds       "," bbb   bbb      ","BbbB   BbbB     ","                ","                ","                ","                "]));
+
+  // skid — leaning back, arms out, dust handled separately
+  MICK.skid=frame([
+    "                ",
+    "    ccccc       ",
+    "   cCCCCCc      ",
+    "  cCcccccCc     ",
+    "   sssssss      ",
+    "  s smsssms     ",
+    "  s sseesee     ",
+    "  s ssmmmmm     ",
+    "     smmmmm     ",
+    "    ksssssk     ",
+    "  wdooooood     ",
+    " Wwdoooooo Od   ",
+    "  xdoooooo Od   ",
+    "   doOoooOood   ",
+    "    dooooood    ",
+    "    dosssod     ",
+    "   sd    ds     ",
+    "  sd      ds    ",
+    "  kd      dk    ",
+    " bbbb    bbbb   ",
+    "BbbbbB  BbbbB   ",
+    "bbbbbb  bbbbb   ",
+    "                ",
+    "                "
+  ]);
+  // jump — arms up, legs tucked, wrench raised
+  MICK.jump=frame([
+    "         W      ",
+    "     cccccW     ",
+    "    cCCCCCx     ",
+    "   cCcccccCc    ",
+    "    sssssss     ",
+    "  s smsssms     ",
+    "  s sseesee     ",
+    "  w ssmmmmm     ",
+    "  W  smmmmm     ",
+    "    ksssssk     ",
+    "   dooooood     ",
+    "  dOoooooOod    ",
+    "  dOoooooOod    ",
+    "   doOooOod     ",
+    "   dooooood     ",
+    "    dossod      ",
+    "    sd ds       ",
+    "    sd ds       ",
+    "    bd db       ",
+    "   bbb bbb      ",
+    "  BbbB BbbB     ",
+    "                ",
+    "                ",
+    "                "
+  ]);
+  // fall — arms wider
+  MICK.fall=frame([
+    "                ",
+    "     ccccc      ",
+    "    cCCCCCc     ",
+    "   cCcccccCc    ",
+    "    sssssss     ",
+    " s  smsssms  s  ",
+    " s  sseesee  s  ",
+    " w  ssmmmmm  s  ",
+    " W   smmmmm     ",
+    "    ksssssk     ",
+    "   dooooood     ",
+    "  dOoooooOod    ",
+    "  dOoooooOod    ",
+    "   doOooOod     ",
+    "   dooooood     ",
+    "    dossod      ",
+    "   sd   ds      ",
+    "  sd     ds     ",
+    "  bd     db     ",
+    " bbb     bbb    ",
+    "BbbB     BbbB   ",
+    "                ",
+    "                ",
+    "                "
+  ]);
+  // duck — compressed
+  MICK.duck=frame([
+    "                ",
+    "                ",
+    "                ",
+    "                ",
+    "                ",
+    "                ",
+    "    ccccc       ",
+    "   cCCCCCc      ",
+    "  cCcccccCc     ",
+    "   sssssss      ",
+    "  smsssms s     ",
+    "  sseesee s     ",
+    "  ssmmmmm s     ",
+    "  dooooood      ",
+    " dOoooooOod     ",
+    " dOoooooOod     ",
+    " doOoooOood     ",
+    " dooooooood     ",
+    " dosssssod      ",
+    "bbbb   bbbb     ",
+    "BbbbB BbbbB     ",
+    "bbbbb bbbbb     ",
+    "                ",
+    "                "
+  ]);
+  // slide — horizontal
+  MICK.slide=frame([
+    "                ",
+    "                ",
+    "                ",
+    "                ",
+    "                ",
+    "                ",
+    "                ",
+    "                ",
+    "                ",
+    "                ",
+    "   ccccc        ",
+    "  cCCCCsssss    ",
+    " cCcccssmssss   ",
+    "  sssseeseems   ",
+    "  dooomm mssk   ",
+    " dOooooooood    ",
+    " dOoooooood b   ",
+    " doooooood bb   ",
+    " bbbbbbb  BbbB  ",
+    "BbbbbbB   bbb   ",
+    "                ",
+    "                ",
+    "                ",
+    "                "
+  ]);
+  // whack (3) — wrench swings down
+  MICK.whack0=frame([
+    "         w      ",
+    "     ccccW       ".slice(0,16),
+    "    cCCCWx      ",
+    "   cCcccxCc    ",
+    "    sssssss     ",
+    "   smsssms s    ",
+    "   sseesee s    ",
+    "   ssmmmmm s    ",
+    "    smmmmm      ",
+    "    ksssssk     ",
+    "   dooooood     ",
+    "  dOoooooOod    ",
+    "  dOoooooOod    ",
+    "  doOoooOood    ",
+    "   dooooood     ",
+    "   dosssod      ",
+    "   sd   ds      ",
+    "   sd   ds      ",
+    "   kd   dk      ",
+    "  bbb   bbb     ",
+    " BbbbB BbbbB    ",
+    " bbbbb bbbbb    ",
+    "                ",
+    "                "
+  ]);
+  MICK.whack1=frame([
+    "                ",
+    "     ccccc      ",
+    "    cCCCCCcW    ",
+    "   cCcccccxW   ",
+    "    ssssssxx    ",
+    "   smsssms w    ",
+    "   sseesee s    ",
+    "   ssmmmmm s    ",
+    "    smmmmm      ",
+    "    ksssssk     ",
+    "   dooooood     ",
+    "  dOoooooOod    ",
+    "  dOoooooOod    ",
+    "  doOoooOood    ",
+    "   dooooood     ",
+    "   dosssod      ",
+    "   sd   ds      ",
+    "   sd   ds      ",
+    "   kd   dk      ",
+    "  bbb   bbb     ",
+    " BbbbB BbbbB    ",
+    " bbbbb bbbbb    ",
+    "                ",
+    "                "
+  ]);
+  MICK.whack2=frame([
+    "                ",
+    "     ccccc      ",
+    "    cCCCCCc     ",
+    "   cCcccccCc    ",
+    "    sssssss     ",
+    "   smsssms s    ",
+    "   sseesee s    ",
+    "   ssmmmmm sw   ",
+    "    smmmmm  W   ",
+    "    ksssssk x   ",
+    "   dooooood W   ",
+    "  dOoooooOodx   ",
+    "  dOoooooOoW    ",
+    "  doOoooOooW    ",
+    "   dooooood     ",
+    "   dosssod      ",
+    "   sd   ds      ",
+    "   sd   ds      ",
+    "   kd   dk      ",
+    "  bbb   bbb     ",
+    " BbbbB BbbbB    ",
+    " bbbbb bbbbb    ",
+    "                ",
+    "                "
+  ]);
+  // crank (2) — turning a valve, both hands on wheel
+  MICK.crank0=frame([
+    "                ",
+    "     ccccc      ",
+    "    cCCCCCc     ",
+    "   cCcccccCc    ",
+    "    sssssss     ",
+    "   smsssms s    ",
+    "   sseesee s    ",
+    "   ssmmmmm s    ",
+    "    smmmmm      ",
+    "    ksssssk     ",
+    "   dooooood     ",
+    "  wOoooooOw     ",
+    "  WOoooooOW     ",
+    "  doOoooOood    ",
+    "   dooooood     ",
+    "   dosssod      ",
+    "   sd   ds      ",
+    "   sd   ds      ",
+    "   kd   dk      ",
+    "  bbb   bbb     ",
+    " BbbbB BbbbB    ",
+    " bbbbb bbbbb    ",
+    "                ",
+    "                "
+  ]);
+  MICK.crank1=frame([
+    "                ",
+    "     ccccc      ",
+    "    cCCCCCc     ",
+    "   cCcccccCc    ",
+    "    sssssss     ",
+    "   smsssms s    ",
+    "   sseesee s    ",
+    "   ssmmmmm s    ",
+    "    smmmmm      ",
+    "    ksssssk     ",
+    "  W dooooood W  ",
+    "  w dOooooOo w  ",
+    "   dOoooooOod   ",
+    "   doOoooOood   ",
+    "   dooooood     ",
+    "   dosssod      ",
+    "   sd   ds      ",
+    "   sd   ds      ",
+    "   kd   dk      ",
+    "  bbb   bbb     ",
+    " BbbbB BbbbB    ",
+    " bbbbb bbbbb    ",
+    "                ",
+    "                "
+  ]);
+  // hurt — recoil
+  MICK.hurt=frame([
+    "                ",
+    "   ccccc        ",
+    "  cCCCCCc       ",
+    " cCcccccCc      ",
+    "  sssssss       ",
+    " sxsssxs  w     ",
+    " ss   ss  W     ",
+    " ssmmmss x      ",
+    "  smmmm  W      ",
+    "  ksssssk       ",
+    "  dooooood      ",
+    " dOoooooOod     ",
+    " dOoooooOod     ",
+    " doOoooOood     ",
+    "  dooooood      ",
+    "  dosssod       ",
+    "  sd   ds       ",
+    " sd     ds      ",
+    " kd     dk      ",
+    "bbb     bbb     ",
+    "BbbB   BbbB     ",
+    "                ",
+    "                ",
+    "                "
+  ]);
+  // victory — wrench raised high
+  MICK.victory=frame([
+    "        W       ",
+    "        W       ",
+    "     cccWx      ",
+    "    cCCCxx      ",
+    "   cCcccccCc    ",
+    "    sssssss     ",
+    "   smsssms      ",
+    "   ssmmmms      ",
+    "    smmmm       ",
+    "    ksssssk     ",
+    "   dooooood     ",
+    "  dOoooooOod    ",
+    "  dOoooooOod    ",
+    "  doOoooOood    ",
+    "   dooooood     ",
+    "   dosssod      ",
+    "   sd   ds      ",
+    "   sd   ds      ",
+    "   kd   dk      ",
+    "  bbb   bbb     ",
+    " BbbbB BbbbB    ",
+    " bbbbb bbbbb    ",
+    "                ",
+    "                "
+  ]);
 }
 
-// Deterministic seeded RNG (mulberry32) so pattern is stable per session but varied
-function mulberry32(seed) {
-  return function () {
-    seed |= 0; seed = (seed + 0x6D2B79F5) | 0;
-    var t = Math.imul(seed ^ (seed >>> 15), 1 | seed);
-    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
-    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+/* ---------------------------------------------------------------
+   5. ENEMY / PROP SPRITES
+   --------------------------------------------------------------- */
+var SPR={};
+function buildSprites(){
+  // Gunk blob (24x20) 2 frames
+  function blob(sq){
+    var c=makeCanvas(24,20),g=c.getContext('2d');
+    var L={g:C.slime,G:C.slimeHi,d:C.slimeDk,e:'#12301a',l:'#ffffff'};
+    var rows= sq ? [
+      "        ",
+      "  gggg  ",
+      " gGGGGg ",
+      "gGGGGGGg",
+      "gGeGGeGg",
+      "gGGGGGGg",
+      "gdGllGdg",
+      " gdggdg ",
+      "        "
+    ] : [
+      "   gg   ",
+      "  gGGg  ",
+      " gGGGGg ",
+      "gGGGGGGg",
+      "gGeGGeGg",
+      "gGGllGGg",
+      "gdGGGGdg",
+      " gdggdg ",
+      " d    d "
+    ];
+    drawPixmap(g,rows,L,0,0,3);
+    return c;
+  }
+  SPR.blob0=blob(false); SPR.blob1=blob(true);
+
+  // Drip slime (10x10) hanging + drop
+  var dc=makeCanvas(12,16),dg=dc.getContext('2d');
+  drawPixmap(dg,["ggg","gGg","gGg","gGg"," g "," G "],{g:C.slime,G:C.slimeHi},0,0,3);
+  SPR.drip=dc;
+
+  // Pipe crab (26x16)
+  var cc=makeCanvas(30,18),cg=cc.getContext('2d');
+  drawPixmap(cg,[
+    "r      r ",
+    " r    r  ",
+    " RRRRRR  ",
+    "RReRReRR ",
+    "RRRRRRRR ",
+    " R RR R  ",
+    "r  RR  r "
+  ],{r:C.rust,R:C.rustHi,e:'#12100a'},0,0,3);
+  SPR.crab=cc;
+
+  // Burst pipe spray puff (used with animation, drawn procedurally)
+  // Rolling barrel (28x28)
+  var bc=makeCanvas(28,28),bg=bc.getContext('2d');
+  bg.fillStyle=C.copperDk; bg.beginPath(); bg.arc(14,14,13,0,Math.PI*2); bg.fill();
+  bg.fillStyle=C.copper; bg.beginPath(); bg.arc(14,14,11,0,Math.PI*2); bg.fill();
+  bg.fillStyle=C.copperHi; bg.beginPath(); bg.arc(11,11,4,0,Math.PI*2); bg.fill();
+  bg.strokeStyle=C.copperDk; bg.lineWidth=2;
+  bg.beginPath(); bg.moveTo(2,14); bg.lineTo(26,14); bg.stroke();
+  bg.beginPath(); bg.moveTo(14,2); bg.lineTo(14,26); bg.stroke();
+  SPR.barrel=bc;
+
+  // Grinder fan (34x34)
+  var gc=makeCanvas(36,36),gg=gc.getContext('2d');
+  gg.fillStyle=C.steelDk; gg.beginPath(); gg.arc(18,18,17,0,Math.PI*2); gg.fill();
+  gg.fillStyle=C.steel;
+  for(var i=0;i<4;i++){
+    gg.save(); gg.translate(18,18); gg.rotate(i*Math.PI/2);
+    gg.beginPath(); gg.moveTo(0,0); gg.lineTo(-4,-16); gg.lineTo(6,-14); gg.closePath(); gg.fill();
+    gg.restore();
+  }
+  gg.fillStyle=C.rivet; gg.beginPath(); gg.arc(18,18,4,0,Math.PI*2); gg.fill();
+  SPR.fan=gc;
+
+  // heart pickup (16x16)
+  var hc=makeCanvas(16,16),hg=hc.getContext('2d');
+  drawPixmap(hg,[" h h "," hHh ","hHHHh","hHHHh"," hHh ","  h  "],{h:C.heart,H:C.heartHi},1,1,2.5);
+  SPR.heart=hc;
+
+  // brass fitting collectible (16x16) — a hex nut
+  var fc=makeCanvas(18,18),fg=fc.getContext('2d');
+  fg.fillStyle=C.brass; fg.beginPath();
+  for(var a=0;a<6;a++){ var an=a*Math.PI/3-Math.PI/6; var px=9+Math.cos(an)*8, py=9+Math.sin(an)*8; if(a===0)fg.moveTo(px,py); else fg.lineTo(px,py); }
+  fg.closePath(); fg.fill();
+  fg.fillStyle=C.goldHi; fg.beginPath();
+  for(var a2=0;a2<6;a2++){ var an2=a2*Math.PI/3-Math.PI/6; var px2=9+Math.cos(an2)*5, py2=9+Math.sin(an2)*5; if(a2===0)fg.moveTo(px2,py2); else fg.lineTo(px2,py2); }
+  fg.closePath(); fg.fill();
+  fg.fillStyle=C.inkDk; fg.beginPath(); fg.arc(9,9,3,0,Math.PI*2); fg.fill();
+  SPR.fitting=fc;
+}
+
+/* Valve wheel drawn procedurally (allows spin). */
+function drawValveWheel(g,cx,cy,r,angle,col,colHi){
+  g.save(); g.translate(cx,cy); g.rotate(angle);
+  g.strokeStyle=col; g.lineWidth=Math.max(2,r*0.28);
+  g.beginPath(); g.arc(0,0,r,0,Math.PI*2); g.stroke();
+  g.strokeStyle=colHi; g.lineWidth=Math.max(1,r*0.14);
+  g.beginPath(); g.arc(0,0,r,0,Math.PI*2); g.stroke();
+  // spokes
+  g.strokeStyle=col; g.lineWidth=Math.max(2,r*0.22);
+  for(var i=0;i<4;i++){ g.save(); g.rotate(i*Math.PI/2); g.beginPath(); g.moveTo(0,0); g.lineTo(0,-r); g.stroke(); g.restore(); }
+  // hub
+  g.fillStyle=colHi; g.beginPath(); g.arc(0,0,r*0.28,0,Math.PI*2); g.fill();
+  g.fillStyle='#222'; g.beginPath(); g.arc(0,0,r*0.12,0,Math.PI*2); g.fill();
+  g.restore();
+}
+
+/* ---------------------------------------------------------------
+   6. THE LEVEL — ASCII tilemap, 3 zones
+   Legend:
+     ' ' empty
+     '#' stone (auto-variant), '=' steel, 'B' background brick (deco solid? no -> deco)
+     'x' cracked stone, 'v' vented steel, 'r' rusted steel, 'w' wet stone, 'o' mossy stone
+     'G' grate (solid), 'C' crumble grate
+     '|' vertical pipe deco (solid), '-' horiz pipe deco (solid)
+     'L' wall lamp (deco), 'h' hanging chain (deco)
+     '.' water (lethal or drainable per pit — see pit markers)
+     'W' water surface tile (top of a body of water)
+     Entities (occupy a tile as spawn, tile becomes empty):
+       'P' player start
+       'g' gunk blob, 's' drip-slime ceiling source, 'p' burst pipe, 'a' pipe crab (in pipe end),
+       'f' grinder fan, 'b' barrel spawner, 'H' heart pickup, '*' brass fitting
+       'R' DRAIN valve, 'U' FLOW valve, 'Y' GEYSER valve, 'K' checkpoint, 'M' master valve
+       'T' teach signpost (auto-numbered), 'Z' zone banner marker
+       '1' drain-pit water region (drainable), '2' basin fill region (flow), '3' geyser column marker
+       'F' floating flow-platform start, 'D' drop/bottomless marker (visual pit bottom)
+   Notes: rows are equal length; width in tiles = row length.
+   --------------------------------------------------------------- */
+
+// We build the level as an array of strings. Height = 17 tiles (544px) tall.
+// The three zones flow left→right. Total width ~ 260 tiles.
+var LEVEL_ROWS = buildLevelRows();
+
+function buildLevelRows(){
+  // Helper to pad rows to equal width.
+  var rows = [];
+  // --- We construct zone by zone as column-segments then concatenate. ---
+  // Height H=17. Row 0 = ceiling top.
+  var H = 17;
+  function blank(){ var a=[]; for(var i=0;i<H;i++)a.push(''); return a; }
+
+  // Each segment: array of H strings; we append horizontally.
+  function seg(strArr){ // strArr is H strings; normalize each row to the segment's max width
+    if(strArr.length!==H) throw new Error('segment must be '+H+' rows, got '+strArr.length);
+    var maxW=0, i;
+    for(i=0;i<strArr.length;i++) if(strArr[i].length>maxW) maxW=strArr[i].length;
+    // pad short rows with spaces (empty air) so the segment is a clean rectangle
+    for(i=0;i<strArr.length;i++){
+      while(strArr[i].length<maxW) strArr[i]=strArr[i]+' ';
+    }
+    return strArr;
+  }
+  function concat(a,b){ var out=[]; for(var i=0;i<H;i++) out.push(a[i]+b[i]); return out; }
+
+  // ---------------- ZONE 1: STONE WORKS ----------------
+  // Ground floor around row 13-16 (bottom). Ceiling rows 0-1.
+  // Intro flat run w/ teach signs, gunk blobs, drip slime, drain pit, checkpoint.
+  // I'll draw with explicit strings (each 1 char = 1 tile).
+  // Legend quick: '#'stone floor, ceiling row uses '#'
+  // We use these building blocks then splice entities.
+
+  // Start plaza (Zone banner Z at spawn)
+  var z1a = seg([
+    "################",
+    "#L            L#",
+    "#              #",
+    "#              #",
+    "#      T       #",  // teach 1: run
+    "#              #",
+    "#              #",
+    "#      P       #",  // player start
+    "#             Z#",  // zone banner marker (drawn as banner)
+    "#              #",
+    "#              #",
+    "#              #",
+    "################",
+    "################",
+    "wwwwwwwwwwwwwwww",
+    "################",
+    "################"
+  ]);
+  // flat run with a couple platforms + first gunk blob + a fitting trail
+  var z1b = seg([
+    "####################",
+    "#L                L#",
+    "#                  #",
+    "#         *        #",
+    "#    T             #",   // teach 2: duck (low pipe below)
+    "#        ###       #",
+    "#     *            #",
+    "#                  #",
+    "#    * H            #",
+    "#              g    #",   // gunk blob
+    "#         ----      #",   // low pipe overhang (duck) — deco solid
+    "#                  #",
+    "####################",
+    "####################",
+    "wwwwwwwwwwwwwwwwwwww",
+    "####################",
+    "####################"
+  ]);
+  // stairs + drip slime + higher ledge
+  var z1c = seg([
+    "##################",
+    "#L              L#",
+    "#     s          #",   // drip slime source (ceiling)
+    "#                #",
+    "#   T            #",   // teach 3: jump
+    "#           ###  #",
+    "#        ###     #",
+    "#     *          #",
+    "#  ###     *   * #",
+    "#             g  #",
+    "#ox            oo#",
+    "#oo    H       oo#",
+    "##################",
+    "##################",
+    "wwwwwwwwwwwwwwwwww",
+    "##################",
+    "##################"
+  ]);
+  // DRAIN valve pit: a flooded pit ('1' drainable water). Valve R on near ledge.
+  var z1d = seg([
+    "######################",
+    "#L                  L#",
+    "#                    #",
+    "#                    #",
+    "#       T            #",   // teach: drain valve
+    "#                    #",
+    "#  R          *      #",   // drain valve on ledge left
+    "#  #                 #",
+    "#  #     *    *       #",
+    "#  #                  #",
+    "#  #11111111111111   #",   // drainable water region (top)
+    "#  #11111111111111   #",   // deeper
+    "####111111111111######",   // pit floor is water; drain reveals floor
+    "####111111111111######",
+    "wwww111111111111wwwwww",
+    "######################",
+    "######################"
+  ]);
+  // checkpoint + zone transition
+  var z1e = seg([
+    "##############",
+    "#L          L#",
+    "#            #",
+    "#            #",
+    "#            #",
+    "#      *     #",
+    "#            #",
+    "#    K       #",   // checkpoint
+    "#   ###      #",
+    "#        H   #",
+    "#xx         o#",
+    "#oo    *    o#",
+    "##############",
+    "##############",
+    "wwwwwwwwwwwwww",
+    "##############",
+    "##############"
+  ]);
+
+  // ---------------- ZONE 2: STEEL MAINS ----------------
+  var z2banner = seg([
+    "==========",
+    "=L       =",
+    "=        =",
+    "=        =",
+    "=   Z    =",   // zone 2 banner
+    "=        =",
+    "=        =",
+    "=        =",
+    "=  T     =",   // teach: run/slide reminder
+    "=        =",
+    "=        =",
+    "=        =",
+    "==========",
+    "==========",
+    "WWWWWWWWWW",
+    "==========",
+    "=========="
+  ]);
+  // burst pipes + crabs
+  var z2a = seg([
+    "====================",
+    "=L                L=",
+    "=                  =",
+    "=       *          =",
+    "=  p           a   =",   // burst pipe (left, sprays right), crab in pipe end (right)
+    "=  =               =",
+    "=  =   *    ===     =",
+    "=  =           *    =",
+    "=  =====            =",
+    "=          g        =",
+    "=r      *        rr =",
+    "=rr             rrr =",
+    "====================",
+    "====================",
+    "WWWWWWWWWWWWWWWWWWWW",
+    "====================",
+    "===================="
+  ]);
+  // FLOW valve dry basin + rising barrel-platform to a high ledge
+  var z2b = seg([
+    "======================",
+    "=L                  L=",
+    "=              ***   =",   // fittings up on the high ledge
+    "=              =====D=",   // high ledge (goal of the climb) with exit
+    "=   T                =",   // teach: flow valve
+    "=   U                =",   // FLOW valve
+    "=   =                =",
+    "=   =        2222    =",   // dry basin '2' that fills; F platform rides up
+    "=   =        2222    =",
+    "=   =    H   2F22    =",   // F = flow platform start (bottom of basin)
+    "=   =========2222=====",
+    "=rr          2222   r=",
+    "=====================D",
+    "======================",
+    "WWWWWWWWWWWWWWWWWWWWWW",
+    "======================",
+    "======================"
+  ]);
+  // crumble grates over water + barrel roll slope
+  var z2c = seg([
+    "====================",
+    "=L                L=",
+    "=                  =",
+    "=      b           =",   // barrel spawner (rolls left→player? we'll roll toward player)
+    "=      =            =",
+    "=  *   ==           =",
+    "=      ===   *      =",
+    "=  C  C  C  C   *   =",   // crumble grates over water
+    "=                   =",
+    "= a          g      =",   // crab + blob
+    "=..................=",   // water below (lethal)
+    "=..................=",
+    "=WW................=",
+    "====================",
+    "WWWWWWWWWWWWWWWWWWWW",
+    "====================",
+    "===================="
+  ]);
+  // zone 2 checkpoint
+  var z2d = seg([
+    "============",
+    "=L        L=",
+    "=          =",
+    "=          =",
+    "=    *     =",
+    "=          =",
+    "=   K      =",   // checkpoint
+    "=  ===     =",
+    "=       H  =",
+    "=rr      rr=",
+    "=rr  *   rr=",
+    "=rr      rr=",
+    "============",
+    "============",
+    "WWWWWWWWWWWW",
+    "============",
+    "============"
+  ]);
+
+  // ---------------- ZONE 3: THE CISTERN ----------------
+  var z3banner = seg([
+    "wwwwwwwwww",
+    "wL       w",
+    "w        w",
+    "w   Z    w",   // zone 3 banner
+    "w        w",
+    "w        w",
+    "w  T     w",   // teach: geyser valve
+    "w        w",
+    "w        w",
+    "w        w",
+    "w        w",
+    "w        w",
+    "wwwwwwwwww",
+    "wwwwwwwwww",
+    "..........",
+    "..........",
+    ".........."
+  ]);
+  // GEYSER wall ascent — sheer wall, geyser valve opens vertical jet '3'
+  var z3a = seg([
+    "wwwwwwwwwwwwww",
+    "wL          Lw",
+    "w    ***    Dw",   // top: fittings + exit right (D bottomless just past? no, exit)
+    "w   =====    w",   // top ledge
+    "w           3w",   // geyser column top
+    "w           3w",
+    "w   *       3w",
+    "w  ===      3w",   // small ledges beside geyser
+    "w           3w",
+    "w      *    3w",
+    "w  Y        3w",   // GEYSER valve at base (left), jet column at right wall
+    "w  =        3w",
+    "wwww=========w",   // floor
+    "wwwwwwwwwwwwww",
+    "..............",
+    "..............",
+    ".............."
+  ]);
+  // grinder fans + bottomless shafts gauntlet
+  var z3b = seg([
+    "wwwwwwwwwwwwwwwwww",
+    "wL              Lw",
+    "w                w",
+    "w   *      f     w",   // fan
+    "w  ===          =w",
+    "w         ===    w",
+    "w   f          * w",   // fan
+    "w        ===     w",
+    "w  ===        ===w",
+    "w      *  f      w",   // fan
+    "w  ===     ===   w",
+    "w                w",
+    "wDDDDDDDDDDDDDDDDw",   // bottomless (D drawn as dark shaft)
+    "wDDDDDDDDDDDDDDDDw",
+    "..................",
+    "..................",
+    ".................."
+  ]);
+  // final gauntlet + MASTER valve
+  var z3c = seg([
+    "wwwwwwwwwwwwwwwwwwww",
+    "wL                w",
+    "w                  w",
+    "w      ***         w",
+    "w    =====         w",
+    "w             *    w",
+    "w   f      ===     w",
+    "w        C  C      w",
+    "w   ===        ==  w",
+    "w         g        w",
+    "w  ===          M  w",   // MASTER valve on final ledge (gold)
+    "w              ==  w",
+    "wDDDDDD===DDDDD====w",
+    "wwwwwwwwwwwwwwwwwwww",
+    "..................w",
+    "..................w",
+    ".................ww"
+  ]);
+  // end cap
+  var z3end = seg([
+    "wwwwwwww",
+    "wwwwwwww",
+    "wwwwwwww",
+    "wwwwwwww",
+    "wwwwwwww",
+    "wwwwwwww",
+    "wwwwwwww",
+    "wwwwwwww",
+    "wwwwwwww",
+    "wwwwwwww",
+    "wwwwwwww",
+    "wwwwwwww",
+    "wwwwwwww",
+    "wwwwwwww",
+    "wwwwwwww",
+    "wwwwwwww",
+    "wwwwwwww"
+  ]);
+
+  var all = z1a;
+  var parts=[z1b,z1c,z1d,z1e, z2banner,z2a,z2b,z2c,z2d, z3banner,z3a,z3b,z3c,z3end];
+  for(var i=0;i<parts.length;i++) all=concat(all,parts[i]);
+  return all;
+}
+
+/* ---------------------------------------------------------------
+   7. LEVEL PARSER — turns ASCII into tile grid + entity list
+   --------------------------------------------------------------- */
+var KNOWN_CHARS = " #=BxvrwoGC|-Lh.WPgspafbH*RUYKMTZ123FD";
+
+function parseLevel(rows){
+  var h=rows.length, w=rows[0].length;
+  // verify rectangular + known chars
+  for(var y=0;y<h;y++){
+    if(rows[y].length!==w) throw new Error('row '+y+' width '+rows[y].length+' != '+w);
+    for(var x=0;x<w;x++){
+      if(KNOWN_CHARS.indexOf(rows[y][x])<0) throw new Error('unknown char "'+rows[y][x]+'" at '+x+','+y);
+    }
+  }
+  // tile grid: store a type + variant seed. Solid map is separate.
+  var grid=[]; var deco=[]; var water=[]; var special=[];
+  var entities=[];
+  var teachN=0, zoneN=0;
+  var playerStart={x:2*TILE,y:6*TILE};
+  var drainRegions=[]; // list of {x0,y0,x1,y1} in tiles
+  var basinRegions=[];
+  var geyserCols=[];
+  var flowPlatforms=[];
+  var bottomless=[];
+  for(var yy=0;yy<h;yy++){
+    grid.push(new Array(w)); deco.push(new Array(w)); water.push(new Array(w)); special.push(new Array(w));
+  }
+  for(var Y=0;Y<h;Y++){
+    for(var X=0;X<w;X++){
+      var ch=rows[Y][X];
+      var seed=(X*31+Y*17+7);
+      switch(ch){
+        case '#': grid[Y][X]=tileVariant('stone',seed); break;
+        case 'x': grid[Y][X]={t:'stone',v:'crack'}; break;
+        case 'o': grid[Y][X]={t:'stone',v:'moss'}; break;
+        case 'w': grid[Y][X]={t:'stone',v:'wet'}; break;
+        case '=': grid[Y][X]=tileVariant('steel',seed); break;
+        case 'r': grid[Y][X]={t:'steel',v:'rust'}; break;
+        case 'v': grid[Y][X]={t:'steel',v:'vent'}; break;
+        case 'G': grid[Y][X]={t:'grate'}; break;
+        case 'C': grid[Y][X]={t:'crumble'}; break; // crumble handled as entity too
+        case '|': grid[Y][X]={t:'pipeV'}; break;
+        case '-': grid[Y][X]={t:'pipeH'}; break;
+        case 'B': deco[Y][X]='brick'; break;
+        case 'L': deco[Y][X]='lamp'; break;
+        case 'h': deco[Y][X]='chain'; break;
+        case '.': water[Y][X]='lethal'; break;
+        case 'W': water[Y][X]='surface'; break;
+        case 'D': special[Y][X]='pit'; bottomless.push({x:X,y:Y}); break;
+        case '1': special[Y][X]='drain'; break;
+        case '2': special[Y][X]='basin'; break;
+        case '3': special[Y][X]='geyser'; geyserCols.push({x:X,y:Y}); break;
+        case 'P': playerStart={x:X*TILE, y:Y*TILE}; break;
+        case 'g': entities.push({type:'blob', tx:X, ty:Y}); break;
+        case 's': entities.push({type:'drip', tx:X, ty:Y}); break;
+        case 'p': entities.push({type:'burst', tx:X, ty:Y}); break;
+        case 'a': entities.push({type:'crab', tx:X, ty:Y}); break;
+        case 'f': entities.push({type:'fan', tx:X, ty:Y}); break;
+        case 'b': entities.push({type:'barrelSpawn', tx:X, ty:Y}); break;
+        case 'H': entities.push({type:'heart', tx:X, ty:Y}); break;
+        case '*': entities.push({type:'fitting', tx:X, ty:Y}); break;
+        case 'R': entities.push({type:'valve', kind:'drain', tx:X, ty:Y}); break;
+        case 'U': entities.push({type:'valve', kind:'flow', tx:X, ty:Y}); break;
+        case 'Y': entities.push({type:'valve', kind:'geyser', tx:X, ty:Y}); break;
+        case 'M': entities.push({type:'valve', kind:'master', tx:X, ty:Y}); break;
+        case 'K': entities.push({type:'checkpoint', tx:X, ty:Y}); break;
+        case 'F': flowPlatforms.push({tx:X, ty:Y}); break;
+        case 'T': entities.push({type:'teach', tx:X, ty:Y, n:teachN++}); break;
+        case 'Z': entities.push({type:'zonebanner', tx:X, ty:Y, n:zoneN++}); break;
+        default: break; // space
+      }
+    }
+  }
+  // Collect drain / basin regions as bounding boxes (contiguous rectangles are fine for our use).
+  function collectRegions(kind){
+    var regs=[];
+    var seen=[];
+    for(var y=0;y<h;y++){ seen.push(new Array(w)); }
+    for(var y2=0;y2<h;y2++) for(var x2=0;x2<w;x2++){
+      if(special[y2][x2]===kind && !seen[y2][x2]){
+        // flood-fill bounding box
+        var stack=[[x2,y2]]; var minx=x2,maxx=x2,miny=y2,maxy=y2;
+        var cells=[];
+        while(stack.length){
+          var p=stack.pop(); var px=p[0], py=p[1];
+          if(px<0||py<0||px>=w||py>=h) continue;
+          if(seen[py][px]||special[py][px]!==kind) continue;
+          seen[py][px]=1; cells.push([px,py]);
+          if(px<minx)minx=px; if(px>maxx)maxx=px; if(py<miny)miny=py; if(py>maxy)maxy=py;
+          stack.push([px+1,py]); stack.push([px-1,py]); stack.push([px,py+1]); stack.push([px,py-1]);
+        }
+        regs.push({x0:minx,y0:miny,x1:maxx,y1:maxy,cells:cells});
+      }
+    }
+    return regs;
+  }
+  drainRegions=collectRegions('drain');
+  basinRegions=collectRegions('basin');
+
+  return {
+    rows:rows, w:w, h:h, grid:grid, deco:deco, water:water, special:special,
+    entities:entities, playerStart:playerStart,
+    drainRegions:drainRegions, basinRegions:basinRegions,
+    geyserCols:geyserCols, flowPlatforms:flowPlatforms, bottomless:bottomless,
+    teachCount:teachN, zoneCount:zoneN
   };
 }
 
-// Build a beat-grid pattern of obstacles across the whole song duration.
-// Density ramps A -> B -> C across thirds of the song.
-function buildBeatGrid(duration) {
-  var rng = mulberry32(1234567);
-  var grid = [];
-  var beatCount = Math.floor((duration - AUDIO_OFFSET) / BEAT_SEC);
-  var thirdA = beatCount * 0.33;
-  var thirdB = beatCount * 0.66;
-  // skip first 4 beats (intro breathing room)
-  for (var i = 4; i < beatCount - 2; i++) {
-    var section = i < thirdA ? 'A' : (i < thirdB ? 'B' : 'C');
-    var chance = section === 'A' ? 0.32 : (section === 'B' ? 0.45 : 0.58);
-    if (rng() < chance) {
-      var t = AUDIO_OFFSET + i * BEAT_SEC;
-      var type = rng() < 0.55 ? 'pipe' : 'gunk';
-      // avoid two obstacles too close together (min 1 beat gap enforced by loop granularity)
-      grid.push({ time: t, type: type, used: false });
-    }
-  }
-  return grid;
+function tileVariant(t,seed){
+  var r=rnd(seed);
+  if(t==='stone'){ return {t:'stone', v: r>0.85?'crack' : r>0.7?'moss' : 'clean'}; }
+  if(t==='steel'){ return {t:'steel', v: r>0.85?'rust' : 'clean'}; }
+  return {t:t, v:'clean'};
 }
 
-// ---------- Particle helpers (pooled, minimal allocation) ----------
-var MAX_PARTICLES = 80;
-var particlePool = [];
-for (var pi = 0; pi < MAX_PARTICLES; pi++) {
-  particlePool.push({ active: false, x: 0, y: 0, vx: 0, vy: 0, life: 0, maxLife: 0, color: '#fff', size: 1, type: 'spark' });
+/* Is the tile at grid coord solid for collision? */
+function tileSolid(L, tx, ty){
+  if(tx<0||ty<0||tx>=L.w||ty>=L.h) return tx<0 || tx>=L.w ; // walls at horizontal bounds; open top/bottom
+  var g=L.grid[ty][tx];
+  if(!g) return false;
+  switch(g.t){
+    case 'stone': case 'steel': case 'grate': case 'pipeV': case 'pipeH': return true;
+    case 'crumble': return true; // crumble solid until it falls (entity toggles)
+    default: return false;
+  }
 }
-function spawnParticle(x, y, vx, vy, life, color, size, type) {
-  for (var i = 0; i < MAX_PARTICLES; i++) {
-    var p = particlePool[i];
-    if (!p.active) {
-      p.active = true; p.x = x; p.y = y; p.vx = vx; p.vy = vy;
-      p.life = life; p.maxLife = life; p.color = color; p.size = size; p.type = type || 'spark';
-      return p;
+
+/* ---------------------------------------------------------------
+   8. AUDIO — bgm + synthesized SFX
+   --------------------------------------------------------------- */
+var Audio2 = {
+  ctx:null, master:null, started:false, muted:false, bgm:null, bgmEl:null,
+  beat:0, beatTime:0,
+  init:function(){
+    if(this.ctx) return;
+    try{
+      var AC = window.AudioContext || window.webkitAudioContext;
+      this.ctx = new AC();
+      this.master = this.ctx.createGain();
+      this.master.gain.value = 0.5;
+      this.master.connect(this.ctx.destination);
+    }catch(e){ this.ctx=null; }
+  },
+  startMusic:function(){
+    if(this.started) return;
+    this.started=true;
+    this.bgmEl = document.getElementById('bgm');
+    if(this.bgmEl){
+      this.bgmEl.volume = this.muted?0:0.55;
+      var p=this.bgmEl.play();
+      if(p&&p.catch) p.catch(function(){});
     }
+  },
+  setMuted:function(m){
+    this.muted=m;
+    if(this.master) this.master.gain.value = m?0:0.5;
+    if(this.bgmEl) this.bgmEl.volume = m?0:0.55;
+  },
+  // soft fade at loop seam: fade out last 0.4s, fade in first 0.4s
+  updateMusic:function(){
+    if(!this.bgmEl||this.muted) return;
+    var el=this.bgmEl;
+    if(!el.duration||isNaN(el.duration)) return;
+    var t=el.currentTime, d=el.duration, fade=0.4, base=0.55;
+    var v=base;
+    if(t>d-fade) v=base*Math.max(0,(d-t)/fade);
+    else if(t<fade) v=base*(t/fade);
+    el.volume=v;
+  },
+  sfx:function(type){
+    if(!this.ctx||this.muted) return;
+    var ctx=this.ctx, now=ctx.currentTime, m=this.master;
+    function tone(freq,dur,typ,vol,slideTo){
+      var o=ctx.createOscillator(), g=ctx.createGain();
+      o.type=typ||'square'; o.frequency.setValueAtTime(freq,now);
+      if(slideTo) o.frequency.exponentialRampToValueAtTime(Math.max(20,slideTo), now+dur);
+      g.gain.setValueAtTime(0.0001,now);
+      g.gain.exponentialRampToValueAtTime(vol||0.15, now+0.008);
+      g.gain.exponentialRampToValueAtTime(0.0001, now+dur);
+      o.connect(g); g.connect(m); o.start(now); o.stop(now+dur+0.02);
+    }
+    function noise(dur,vol,filterFreq){
+      var len=Math.floor(ctx.sampleRate*dur);
+      var buf=ctx.createBuffer(1,len,ctx.sampleRate);
+      var d=buf.getChannelData(0);
+      for(var i=0;i<len;i++) d[i]=(Math.random()*2-1)*(1-i/len);
+      var src=ctx.createBufferSource(); src.buffer=buf;
+      var f=ctx.createBiquadFilter(); f.type='bandpass'; f.frequency.value=filterFreq||1000;
+      var g=ctx.createGain(); g.gain.value=vol||0.12;
+      src.connect(f); f.connect(g); g.connect(m); src.start(now);
+    }
+    switch(type){
+      case 'jump':   tone(320,0.16,'square',0.14,620); break;
+      case 'stomp':  tone(220,0.09,'square',0.16,90); noise(0.08,0.08,600); break;
+      case 'whack':  noise(0.06,0.14,1800); tone(500,0.05,'square',0.10,300); break;
+      case 'ratchet':tone(900,0.03,'square',0.09); break;
+      case 'splash': noise(0.22,0.12,700); tone(180,0.15,'sine',0.07,120); break;
+      case 'hurt':   tone(300,0.25,'sawtooth',0.16,90); break;
+      case 'coin':   tone(880,0.06,'square',0.11); tone(1320,0.09,'square',0.10); break;
+      case 'heart':  tone(660,0.08,'sine',0.12,990); tone(990,0.12,'sine',0.10); break;
+      case 'geyser': noise(0.4,0.10,500); tone(140,0.4,'sine',0.06,200); break;
+      case 'fanfare':
+        [523,659,784,1046].forEach(function(f,i){ setTimeout(function(){ tone(f,0.28,'square',0.13); }, i*130); });
+        break;
+      case 'crumble':noise(0.3,0.10,300); break;
+      case 'geyseron': tone(200,0.3,'sine',0.08,500); noise(0.3,0.08,400); break;
+    }
+  }
+};
+
+/* ---------------------------------------------------------------
+   9. INPUT — keyboard + touch
+   --------------------------------------------------------------- */
+var Input = {
+  left:false, right:false, down:false, jump:false, jumpHeld:false, run:false, wrench:false,
+  jumpEdge:false, wrenchHeld:false, anyGesture:false,
+  _prevJump:false
+};
+function bindKeys(){
+  var down={};
+  window.addEventListener('keydown', function(e){
+    var k=e.key.toLowerCase();
+    if(['arrowleft','arrowright','arrowup','arrowdown',' ','spacebar'].indexOf(k)>=0) e.preventDefault();
+    down[k]=true; updateFromKeys();
+    Input.anyGesture=true;
+    if(k==='p') togglePause();
+    if(k==='m') toggleMute();
+    handleMenuKey(k);
+  });
+  window.addEventListener('keyup', function(e){ down[e.key.toLowerCase()]=false; updateFromKeys(); });
+  function updateFromKeys(){
+    Input.left = !!(down['arrowleft']||down['a']);
+    Input.right= !!(down['arrowright']||down['d']);
+    Input.down = !!(down['arrowdown']||down['s']);
+    Input.jumpHeld = !!(down[' ']||down['spacebar']||down['arrowup']||down['w']);
+    Input.run  = !!(down['shift']);
+    Input.wrenchHeld = !!(down['j']);
+  }
+}
+
+/* Touch controls: left D-pad (◀ ▶ ▼), right JUMP + WRENCH(=RUN when moving) */
+var touchState={ left:false,right:false,down:false,jump:false,wrench:false };
+function buildTouch(){
+  var root=document.getElementById('touch');
+  var isTouch = ('ontouchstart' in window) || navigator.maxTouchPoints>0;
+  function mk(id,label,cls){ var b=document.createElement('div'); b.className='tbtn '+(cls||''); b.textContent=label; b.dataset.k=id; root.appendChild(b); return b; }
+  var bL=mk('left','◀'); var bR=mk('right','▶'); var bD=mk('down','▼');
+  var bJ=mk('jump','JUMP','round'); var bW=mk('wrench','⚡','round');
+  function layout(){
+    var vw=window.innerWidth, vh=window.innerHeight;
+    var sz=Math.max(56, Math.min(84, Math.floor(vw*0.15)));
+    var pad=14, baseY=vh-pad-sz;
+    bL.style.width=bL.style.height=sz+'px'; bL.style.left=pad+'px'; bL.style.top=baseY+'px';
+    bR.style.width=bR.style.height=sz+'px'; bR.style.left=(pad+sz+8)+'px'; bR.style.top=baseY+'px';
+    bD.style.width=bD.style.height=sz+'px'; bD.style.left=(pad+Math.floor(sz*0.5)+4)+'px'; bD.style.top=(baseY-sz-8)+'px';
+    var bigJ=Math.floor(sz*1.15);
+    bJ.style.width=bJ.style.height=bigJ+'px'; bJ.style.left=(vw-pad-bigJ)+'px'; bJ.style.top=(vh-pad-bigJ)+'px';
+    bW.style.width=bW.style.height=sz+'px'; bW.style.left=(vw-pad-bigJ-sz-8)+'px'; bW.style.top=(vh-pad-sz-Math.floor(sz*0.35))+'px';
+    bJ.style.fontSize=Math.floor(bigJ*0.22)+'px'; bW.style.fontSize=Math.floor(sz*0.42)+'px';
+    [bL,bR,bD].forEach(function(b){ b.style.fontSize=Math.floor(sz*0.4)+'px'; });
+  }
+  layout(); window.addEventListener('resize',layout);
+  function press(b,on){ var k=b.dataset.k; touchState[k]=on; if(on)b.classList.add('press'); else b.classList.remove('press'); }
+  [bL,bR,bD,bJ,bW].forEach(function(b){
+    b.addEventListener('touchstart',function(e){ e.preventDefault(); press(b,true); Input.anyGesture=true; onFirstGesture(); },{passive:false});
+    b.addEventListener('touchend',function(e){ e.preventDefault(); press(b,false); },{passive:false});
+    b.addEventListener('touchcancel',function(e){ e.preventDefault(); press(b,false); },{passive:false});
+    // pointer fallback for testing on desktop
+    b.addEventListener('mousedown',function(e){ e.preventDefault(); press(b,true); Input.anyGesture=true; onFirstGesture(); });
+    b.addEventListener('mouseup',function(e){ e.preventDefault(); press(b,false); });
+    b.addEventListener('mouseleave',function(e){ if(touchState[b.dataset.k]) press(b,false); });
+  });
+  if(isTouch){ root.classList.add('on'); }
+  return isTouch;
+}
+
+/* ---------------------------------------------------------------
+   10. GAME STATE
+   --------------------------------------------------------------- */
+var STATE = 'title'; // title | howto | play | win | gameover
+var L=null;          // parsed level
+var cam={x:0,y:0, lookX:0};
+var player=null;
+var world=null;      // dynamic world systems (valves, water, entities...)
+var hud={ score:0, fittings:0, hearts:3 };
+var stats={ startTime:0, fittings:0, kills:0, patches:0 };
+var idleTimer=0;
+var beatClock=0;
+var globalTime=0;
+var menuSel=0;
+var pausedFromPlay=false;
+
+/* Player factory */
+function makePlayer(px,py){
+  return {
+    x:px, y:py, w:PHYS.BODY_W, h:PHYS.STAND_H,
+    vx:0, vy:0, facing:1, grounded:false, wasGrounded:false,
+    coyote:0, jumpBuf:0, jumping:false, jumpHeld:false,
+    runCharge:0, ducking:false, sliding:false, slideT:0,
+    skidding:false, squash:0, iframe:0, hurtT:0,
+    anim:'idle', animT:0, animFrame:0,
+    cranking:null, crankT:0, whackT:0,
+    onSlick:0, alive:true, victory:false,
+    spawnX:px, spawnY:py, // checkpoint respawn
+    winTimer:0
+  };
+}
+
+/* ---------------------------------------------------------------
+   11. WORLD INIT
+   --------------------------------------------------------------- */
+function initWorld(){
+  L = parseLevel(LEVEL_ROWS);
+  player = makePlayer(L.playerStart.x, L.playerStart.y - PHYS.STAND_H + TILE - 4);
+  hud={ score:0, fittings:0, hearts:3 };
+  stats={ startTime:globalTime, fittings:0, kills:0, patches:0 };
+  cam={x:0,y:0,lookX:0};
+  var fittingsTotal=0;
+
+  world={
+    enemies:[], drips:[], bursts:[], crabs:[], fans:[], barrels:[], barrelSpawns:[],
+    pickups:[], fittings:[], valves:[], checkpoints:[], teaches:[], banners:[],
+    particles:[], drainState:[], basinState:[], geyserState:[], flowPlats:[],
+    crumbles:[], geyserActive:false, geyserTimer:0,
+    slickTiles:[], shake:0, floatText:[],
+    teachSeen:{}, valveSeen:{}, bannerShown:{}, curZone:0,
+    winStage:0, winCrankHold:0, winFlood:0
+  };
+
+  // instantiate entities
+  L.entities.forEach(function(e){
+    var wx=e.tx*TILE, wy=e.ty*TILE;
+    switch(e.type){
+      case 'blob': world.enemies.push({kind:'blob', x:wx+4, y:wy+8, w:24, h:24, vx:-40, dir:-1, alive:true, animT:0}); break;
+      case 'drip': world.drips.push({tx:e.tx, ty:e.ty, x:wx+TILE/2, y:wy+TILE, phase:'idle', t:Math.random()*2, dropY:0, dropVy:0, slickT:0}); break;
+      case 'burst': world.bursts.push({x:wx, y:wy, w:TILE, h:TILE, dir:1, cycle:Math.random()*2, spraying:false, patched:false, hp:1}); break;
+      case 'crab': world.crabs.push({x:wx, y:wy+8, dir:-1, ext:0, phase:'in', t:Math.random()*2, alive:true, w:26, h:16}); break;
+      case 'fan': world.fans.push({x:wx+16, y:wy+16, r:15, spin:0, speed:0, cyc:Math.random()*3}); break;
+      case 'barrelSpawn': world.barrelSpawns.push({x:wx, y:wy, t:0, interval:3.2}); break;
+      case 'heart': world.pickups.push({kind:'heart', x:wx+8, y:wy+8, w:16, h:16, got:false, bob:Math.random()*6}); break;
+      case 'fitting': world.fittings.push({x:wx+8, y:wy+8, w:16, h:16, got:false, bob:Math.random()*6}); fittingsTotal++; break;
+      case 'checkpoint': world.checkpoints.push({x:wx, y:wy, tx:e.tx, ty:e.ty, active:false, flash:0}); break;
+      case 'teach': world.teaches.push({x:wx, y:wy, tx:e.tx, ty:e.ty, n:e.n, shown:false, alpha:0}); break;
+      case 'zonebanner': world.banners.push({x:wx, n:e.n, triggered:false}); break;
+      case 'valve':
+        world.valves.push({
+          kind:e.kind, x:wx, y:wy, tx:e.tx, ty:e.ty,
+          angle:0, turning:false, turned:false, hold:0, cool:0,
+          drainTimer:0, refillWarn:0, // for drain
+          w:TILE, h:TILE, seen:false
+        });
+        break;
+    }
+  });
+  world.fittingsTotal=fittingsTotal;
+
+  // drain regions -> state (drained flag + refill timer + baseline water top)
+  world.drainState = L.drainRegions.map(function(r){
+    return { r:r, drained:false, timer:0, level:1, valveIdx:-1 };
+  });
+  // basin regions -> state (fill 0..1)
+  world.basinState = L.basinRegions.map(function(r){ return { r:r, fill:0 }; });
+  // flow platforms
+  world.flowPlats = L.flowPlatforms.map(function(p){
+    return { x:p.tx*TILE, y:p.ty*TILE, baseY:p.ty*TILE, w:TILE, h:12, riding:false };
+  });
+  // geyser columns grouped by x
+  var geyCols={};
+  L.geyserCols.forEach(function(g){ if(!geyCols[g.x])geyCols[g.x]={x:g.x, y0:g.y, y1:g.y}; else { geyCols[g.x].y0=Math.min(geyCols[g.x].y0,g.y); geyCols[g.x].y1=Math.max(geyCols[g.x].y1,g.y);} });
+  world.geyserState = Object.keys(geyCols).map(function(k){ return geyCols[k]; });
+
+  // crumble tiles -> entities
+  for(var y=0;y<L.h;y++) for(var x=0;x<L.w;x++){
+    if(L.grid[y][x] && L.grid[y][x].t==='crumble'){
+      world.crumbles.push({tx:x, ty:y, state:'solid', t:0});
+    }
+  }
+
+  // link nearest drain region to each drain valve
+  world.valves.forEach(function(v,vi){
+    if(v.kind==='drain'){
+      var best=-1, bd=1e9;
+      world.drainState.forEach(function(ds,di){
+        var cx=(ds.r.x0+ds.r.x1)/2, dist=Math.abs(cx-v.tx);
+        if(dist<bd){ bd=dist; best=di; }
+      });
+      if(best>=0) world.drainState[best].valveIdx=vi;
+    }
+  });
+}
+
+/* ---------------------------------------------------------------
+   12. COLLISION — AABB vs tile grid with drained/crumble awareness
+   --------------------------------------------------------------- */
+function solidAt(px,py){ // pixel coords -> is solid?
+  var tx=Math.floor(px/TILE), ty=Math.floor(py/TILE);
+  if(tx<0||tx>=L.w) return true;      // side walls
+  if(ty<0) return false;              // open ceiling above grid
+  if(ty>=L.h) return false;           // open below (fall out)
+  var g=L.grid[ty][tx];
+  if(!g) return false;
+  if(g.t==='crumble'){
+    // check crumble state
+    for(var i=0;i<world.crumbles.length;i++){
+      var c=world.crumbles[i];
+      if(c.tx===tx && c.ty===ty) return (c.state!=='gone');
+    }
+    return true;
+  }
+  return tileSolid(L,tx,ty);
+}
+
+// Move an AABB (x,y,w,h) by dx,dy resolving against tiles. Returns collision flags.
+function moveAndCollide(box, dx, dy){
+  var res={left:false,right:false,up:false,down:false};
+  // Horizontal first
+  box.x += dx;
+  if(dx!==0){
+    var dir = dx>0?1:-1;
+    var edge = dir>0 ? box.x+box.w : box.x;
+    var t0=Math.floor(box.y/TILE), t1=Math.floor((box.y+box.h-1)/TILE);
+    for(var ty=t0;ty<=t1;ty++){
+      if(solidAt(edge, ty*TILE+2)){
+        var tx=Math.floor(edge/TILE);
+        if(dir>0){ box.x = tx*TILE - box.w - 0.001; res.right=true; }
+        else { box.x = (tx+1)*TILE + 0.001; res.left=true; }
+        break;
+      }
+    }
+  }
+  // Vertical
+  box.y += dy;
+  if(dy!==0){
+    var vdir = dy>0?1:-1;
+    var vedge = vdir>0 ? box.y+box.h : box.y;
+    var x0=Math.floor(box.x/TILE), x1=Math.floor((box.x+box.w-1)/TILE);
+    for(var xx=x0;xx<=x1;xx++){
+      if(solidAt(xx*TILE+2, vedge)){
+        var tyy=Math.floor(vedge/TILE);
+        if(vdir>0){ box.y = tyy*TILE - box.h - 0.001; res.down=true; }
+        else { box.y = (tyy+1)*TILE + 0.001; res.up=true; }
+        break;
+      }
+    }
+  }
+  return res;
+}
+
+/* Support: also collide with dynamic flow platforms (one-way top). */
+function collideFlowPlatforms(p, prevBottom){
+  world.flowPlats.forEach(function(fp){
+    if(p.vy<0) return;
+    var pb=p.y+p.h;
+    if(p.x+p.w>fp.x+2 && p.x<fp.x+fp.w-2){
+      if(prevBottom<=fp.y+2 && pb>=fp.y && pb<=fp.y+18){
+        p.y=fp.y-p.h; p.vy=0; p.grounded=true; fp.riding=true;
+      }
+    }
+  });
+}
+
+/* ---------------------------------------------------------------
+   13. PHYSICS STEP (player)
+   --------------------------------------------------------------- */
+function updatePlayer(dt){
+  var p=player;
+  if(!p.alive) return;
+
+  // gather input (merge keyboard + touch)
+  var IL = Input.left||touchState.left;
+  var IR = Input.right||touchState.right;
+  var ID = Input.down||touchState.down;
+  var IjumpHeld = Input.jumpHeld||touchState.jump;
+  var Iwrench = Input.wrenchHeld||touchState.wrench;
+  // On mobile, WRENCH doubles as RUN while moving:
+  var IRun = Input.run || (Iwrench && (IL||IR));
+
+  // jump edge detection
+  var jumpPressed = IjumpHeld && !p.jumpHeld;
+  p.jumpHeld = IjumpHeld;
+
+  // If cranking a valve, lock movement
+  if(p.cranking){
+    p.vx=0;
+    return; // valve system drives crank; handled in updateValves
+  }
+
+  // ---- horizontal ----
+  var accel=PHYS.WALK_ACCEL;
+  var maxSpeed = IRun ? lerp(PHYS.WALK_MAX, PHYS.RUN_MAX, clamp(p.runCharge/PHYS.RUN_RAMP,0,1)) : PHYS.WALK_MAX;
+  // charge run meter
+  if(IRun && (IL||IR) && p.grounded) p.runCharge=Math.min(PHYS.RUN_RAMP, p.runCharge+dt);
+  else if(!IRun) p.runCharge=Math.max(0, p.runCharge-dt*1.6);
+
+  var slickMul = p.onSlick>0 ? 0.3 : 1;
+
+  if(p.sliding){
+    // slide: keep momentum, decelerate slowly
+    p.slideT-=dt;
+    p.vx -= Math.sign(p.vx)*Math.min(Math.abs(p.vx), 600*dt);
+    if(p.slideT<=0 || Math.abs(p.vx)<40 || !p.grounded){ p.sliding=false; }
+  } else if(ID && p.grounded && Math.abs(p.vx)>PHYS.SKID_THRESH && (IL||IR)===false){
+    // slide trigger handled below via input transitions; keep here as guard
+  } else {
+    var dirWanted = (IR?1:0) - (IL?1:0);
+    if(dirWanted!==0 && !p.ducking){
+      // skid check: reversing above threshold
+      if(Math.sign(p.vx)!==0 && Math.sign(p.vx)!==dirWanted && Math.abs(p.vx)>PHYS.SKID_THRESH){
+        p.skidding=true;
+        p.vx += dirWanted*PHYS.SKID_DECEL*dt;
+        if(Math.sign(p.vx)===dirWanted || Math.abs(p.vx)<10){ p.skidding=false; }
+        // dust
+        if(Math.random()<0.6) spawnDust(p.x+p.w/2, p.y+p.h, -dirWanted);
+      } else {
+        p.skidding=false;
+        p.vx += dirWanted*accel*slickMul*dt;
+        if(p.vx>maxSpeed) p.vx=Math.max(maxSpeed, p.vx-accel*dt);
+        if(p.vx<-maxSpeed) p.vx=Math.min(-maxSpeed, p.vx+accel*dt);
+      }
+      p.facing=dirWanted;
+    } else {
+      // friction
+      p.skidding=false;
+      var fr=PHYS.FRICTION*slickMul;
+      if(p.vx>0) p.vx=Math.max(0,p.vx-fr*dt);
+      else if(p.vx<0) p.vx=Math.min(0,p.vx+fr*dt);
+    }
+    // clamp to max when not skidding
+    if(!p.skidding){
+      if(p.vx>maxSpeed) p.vx=maxSpeed;
+      if(p.vx<-maxSpeed) p.vx=-maxSpeed;
+    }
+  }
+
+  // ducking
+  var wantDuck = ID && p.grounded && !p.sliding;
+  if(wantDuck && !p.ducking){
+    // if moving fast -> slide
+    if(Math.abs(p.vx)>PHYS.SKID_THRESH){
+      p.sliding=true; p.slideT=PHYS.SLIDE_TIME;
+    } else {
+      p.ducking=true;
+    }
+  }
+  if(!ID) p.ducking=false;
+  var targetH = (p.ducking||p.sliding) ? PHYS.DUCK_H : PHYS.STAND_H;
+  if(targetH!==p.h){
+    var feet=p.y+p.h; p.h=targetH; p.y=feet-p.h; // keep feet planted
+  }
+  if(p.ducking||p.sliding) p.vx = p.sliding? p.vx : p.vx*Math.pow(0.0001,dt*0); // ducking allows some slide
+
+  // ---- jump ----
+  p.coyote = p.grounded ? PHYS.COYOTE : Math.max(0,p.coyote-dt);
+  if(jumpPressed) p.jumpBuf=PHYS.JUMP_BUFFER; else p.jumpBuf=Math.max(0,p.jumpBuf-dt);
+  var justJumped=false;
+  if(p.jumpBuf>0 && p.coyote>0 && !p.sliding){
+    var jv = (p.runCharge>0.5||Math.abs(p.vx)>PHYS.WALK_MAX+20) ? PHYS.JUMP_V_RUN : PHYS.JUMP_V_WALK;
+    p.vy=jv; p.jumping=true; p.grounded=false; p.coyote=0; p.jumpBuf=0;
+    p.ducking=false; justJumped=true;
+    Audio2.sfx('jump');
+    spawnDust(p.x+p.w/2, p.y+p.h, 0);
+  }
+  // variable jump gravity. On the launch frame, give one clean frame of impulse
+  // before gravity bites (crisper launch; lifts apex to the intended ~90px band).
+  var grav=PHYS.GRAVITY;
+  if(p.jumping && p.vy<0 && IjumpHeld) grav=PHYS.JUMP_GRAV;
+  if(!IjumpHeld && p.vy<0) p.jumping=false;
+  if(!justJumped) p.vy += grav*dt;
+  if(p.vy>PHYS.TERMINAL) p.vy=PHYS.TERMINAL;
+
+  // ---- integrate with substepping ----
+  var speed=Math.max(Math.abs(p.vx),Math.abs(p.vy));
+  var steps=1;
+  if(speed>SUBSTEP_SPEED) steps=Math.ceil(speed/SUBSTEP_SPEED);
+  steps=Math.min(steps,6);
+  var sdt=dt/steps;
+  p.wasGrounded=p.grounded;
+  p.grounded=false;
+  for(var s=0;s<steps;s++){
+    var prevBottom=p.y+p.h;
+    var box={x:p.x,y:p.y,w:p.w,h:p.h};
+    var col=moveAndCollide(box, p.vx*sdt, p.vy*sdt);
+    p.x=box.x; p.y=box.y;
+    if(col.down){ p.vy=0; p.grounded=true; }
+    if(col.up){ p.vy=0; p.jumping=false; }
+    if(col.left||col.right){ p.vx=0; }
+    collideFlowPlatforms(p, prevBottom);
+  }
+
+  // landing squash
+  if(p.grounded && !p.wasGrounded){
+    p.squash=PHYS.SQUASH;
+    Audio2.sfx('stomp'); // subtle land tick reuse; soft
+    spawnDust(p.x+p.w/2, p.y+p.h, 0);
+    if(Math.abs(p.vy)>0){}
+  }
+  if(p.squash>0) p.squash-=dt;
+
+  // slick decay
+  if(p.onSlick>0) p.onSlick-=dt;
+
+  // iframe
+  if(p.iframe>0) p.iframe-=dt;
+
+  // ---- hazards: water/pits ----
+  var footTx=Math.floor((p.x+p.w/2)/TILE), footTy=Math.floor((p.y+p.h)/TILE);
+  // lethal water or bottomless if fully submerged center
+  var cTx=Math.floor((p.x+p.w/2)/TILE), cTy=Math.floor((p.y+p.h*0.6)/TILE);
+  if(cTy>=0 && cTy<L.h && cTx>=0 && cTx<L.w){
+    var wt=L.water[cTy][cTx];
+    if(wt==='lethal'){ hurtByPit(); }
+    // drainable region: lethal only if not drained
+    if(L.special[cTy][cTx]==='drain'){
+      var ds=findDrainStateAt(cTx,cTy);
+      if(ds && !ds.drained){ hurtByPit(); }
+    }
+    if(L.special[cTy][cTx]==='pit'){ hurtByPit(); }
+  }
+  // fall out of bottom of world
+  if(p.y>L.h*TILE+40){ hurtByPit(); }
+
+  // ---- animation state ----
+  updatePlayerAnim(dt, IL, IR);
+
+  // camera look-ahead follows facing; runwind lines
+  if(Math.abs(p.vx)>PHYS.RUN_MAX-30) spawnWind(p);
+}
+
+function findDrainStateAt(tx,ty){
+  for(var i=0;i<world.drainState.length;i++){
+    var r=world.drainState[i].r;
+    if(tx>=r.x0&&tx<=r.x1&&ty>=r.y0&&ty<=r.y1) return world.drainState[i];
   }
   return null;
 }
-function spawnBurstFX(x, y) {
-  // sparks
-  for (var i = 0; i < 8; i++) {
-    var ang = Math.random() * Math.PI * 2;
-    var spd = 60 + Math.random() * 90;
-    spawnParticle(x, y, Math.cos(ang) * spd, Math.sin(ang) * spd - 40, 0.35 + Math.random() * 0.2, PAL.spark, 2, 'spark');
-  }
-  // steam puffs
-  for (var j = 0; j < 4; j++) {
-    spawnParticle(x, y - 4, (Math.random() - 0.5) * 20, -30 - Math.random() * 20, 0.6 + Math.random() * 0.3, PAL.steam, 3, 'steam');
-  }
-}
-function spawnSplash(x, y) {
-  for (var i = 0; i < 6; i++) {
-    var ang = -Math.PI / 2 + (Math.random() - 0.5) * 1.6;
-    var spd = 50 + Math.random() * 70;
-    spawnParticle(x, y, Math.cos(ang) * spd, Math.sin(ang) * spd, 0.4 + Math.random() * 0.2, PAL.waterLight, 2, 'splash');
-  }
+
+function hurtByPit(){
+  if(!player.alive) return;
+  loseHeart(true);
 }
 
-// ---------- Confetti (win screen) ----------
-function spawnConfetti() {
-  confetti = [];
-  for (var i = 0; i < 30; i++) {
-    confetti.push({
-      x: Math.random() * BASE_W,
-      y: -20 - Math.random() * 100,
-      vy: 40 + Math.random() * 40,
-      vx: (Math.random() - 0.5) * 30,
-      rot: Math.random() * Math.PI * 2,
-      vrot: (Math.random() - 0.5) * 6,
-      color: [PAL.copper, PAL.slime, PAL.cream, PAL.orange][Math.floor(Math.random() * 4)]
-    });
+function updatePlayerAnim(dt, IL, IR){
+  var p=player;
+  p.animT+=dt;
+  var newAnim;
+  if(p.hurtT>0){ newAnim='hurt'; p.hurtT-=dt; }
+  else if(p.cranking){ newAnim='crank'; }
+  else if(p.whackT>0){ newAnim='whack'; p.whackT-=dt; }
+  else if(!p.grounded){ newAnim = p.vy<0 ? 'jump':'fall'; }
+  else if(p.sliding){ newAnim='slide'; }
+  else if(p.ducking){ newAnim='duck'; }
+  else if(p.skidding){ newAnim='skid'; }
+  else if(Math.abs(p.vx)>PHYS.WALK_MAX+10){ newAnim='run'; }
+  else if(Math.abs(p.vx)>12){ newAnim='walk'; }
+  else newAnim='idle';
+  if(newAnim!==p.anim){ p.anim=newAnim; p.animT=0; p.animFrame=0; }
+  // frame timing
+  var spd=Math.abs(p.vx);
+  var rate = p.anim==='run'? 0.07 : p.anim==='walk'? Math.max(0.07,0.16-spd/2000) : 0.35;
+  p.animFrame = Math.floor(p.animT/rate);
+}
+
+/* ---------------------------------------------------------------
+   14. PARTICLES / TEXT
+   --------------------------------------------------------------- */
+function spawnDust(x,y,dir){
+  for(var i=0;i<4;i++){
+    world.particles.push({ x:x, y:y, vx:(Math.random()-0.5)*40 + dir*30, vy:-Math.random()*40-10,
+      life:0.35, max:0.35, r:2+Math.random()*2, col:'#cfc9b8', grav:120 });
   }
 }
-
-// ---------- Parallax layers (procedural, drawn via canvas paths, cheap) ----------
-var parallaxOffsets = [0, 0, 0];
-
-function drawParallaxLayer(offset, speedFactor, drawFn) {
-  var w = BASE_W;
-  var x = -(offset * speedFactor) % w;
-  drawFn(x);
-  drawFn(x + w);
-}
-
-function drawCitySilhouette(xOff) {
-  ctx.fillStyle = '#152A3F';
-  var buildings = [
-    [0, 60, 40, 108], [45, 40, 30, 128], [80, 80, 35, 88],
-    [120, 30, 45, 138], [170, 70, 30, 98], [205, 50, 40, 118],
-    [250, 90, 35, 78], [290, 35, 40, 133], [335, 65, 40, 103]
-  ];
-  for (var i = 0; i < buildings.length; i++) {
-    var b = buildings[i];
-    ctx.fillRect(xOff + b[0], b[1], b[2], b[3]);
+function spawnWind(p){
+  if(Math.random()<0.4){
+    world.particles.push({ x:p.x+(p.facing>0?-4:p.w+4), y:p.y+8+Math.random()*20,
+      vx:-p.facing*180, vy:0, life:0.18, max:0.18, r:1, col:'#dfe8ef', line:true });
   }
 }
+function spawnSplash(x,y,col){
+  for(var i=0;i<10;i++){
+    world.particles.push({ x:x, y:y, vx:(Math.random()-0.5)*140, vy:-Math.random()*160-40,
+      life:0.5, max:0.5, r:2+Math.random()*2, col:col||C.waterHi, grav:400 });
+  }
+}
+function spawnBurstFX(x,y,col){
+  for(var i=0;i<12;i++){
+    var a=Math.random()*Math.PI*2, sp=40+Math.random()*120;
+    world.particles.push({ x:x, y:y, vx:Math.cos(a)*sp, vy:Math.sin(a)*sp,
+      life:0.5, max:0.5, r:2+Math.random()*3, col:col||'#dfe8ef', grav:200 });
+  }
+}
+function floatText(x,y,txt,col){
+  world.floatText.push({x:x,y:y,txt:txt,col:col||C.gold,life:1.0,max:1.0});
+}
+function updateParticles(dt){
+  for(var i=world.particles.length-1;i>=0;i--){
+    var pt=world.particles[i];
+    pt.life-=dt; if(pt.life<=0){ world.particles.splice(i,1); continue; }
+    pt.x+=pt.vx*dt; pt.y+=pt.vy*dt;
+    if(pt.grav) pt.vy+=pt.grav*dt;
+  }
+  for(var j=world.floatText.length-1;j>=0;j--){
+    var f=world.floatText[j]; f.life-=dt; f.y-=18*dt; if(f.life<=0) world.floatText.splice(j,1);
+  }
+  if(world.shake>0) world.shake-=dt*8;
+}
 
-function drawBrickWall(xOff) {
-  ctx.fillStyle = PAL.brick;
-  ctx.fillRect(xOff, 90, BASE_W, 78);
-  ctx.fillStyle = PAL.brickDark;
-  var brickW = 16, brickH = 8;
-  for (var row = 0; row < 10; row++) {
-    var yy = 90 + row * brickH;
-    var stagger = (row % 2) * (brickW / 2);
-    for (var col = -1; col < BASE_W / brickW + 1; col++) {
-      var xx = xOff + col * brickW + stagger;
-      ctx.strokeStyle = PAL.brickDark;
-      ctx.lineWidth = 1;
-      ctx.strokeRect(xx, yy, brickW, brickH);
+/* ---------------------------------------------------------------
+   15. HEARTS / DAMAGE / RESPAWN
+   --------------------------------------------------------------- */
+function loseHeart(fromPit){
+  var p=player;
+  if(p.iframe>0 && !fromPit) return;
+  hud.hearts--;
+  Audio2.sfx('hurt');
+  world.shake=1;
+  if(hud.hearts<=0){
+    // Game over -> respawn at checkpoint with hearts restored, -500 score. Kind.
+    respawnAtCheckpoint(true);
+  } else {
+    if(fromPit){
+      respawnAtCheckpoint(false);
+    } else {
+      // knockback + iframes
+      p.iframe=PHYS.IFRAME; p.hurtT=0.4;
+      p.vx = -p.facing*PHYS.KNOCK_X; p.vy=PHYS.KNOCK_Y; p.grounded=false;
     }
   }
-  // background pipes running along wall
-  ctx.fillStyle = PAL.metalDark;
-  ctx.fillRect(xOff, 100, BASE_W, 6);
-  ctx.fillRect(xOff, 140, BASE_W, 5);
+}
+function respawnAtCheckpoint(gameover){
+  var p=player;
+  if(gameover){ hud.hearts=3; hud.score=Math.max(0,hud.score-500); floatText(p.x,p.y-30,'-500',C.red); }
+  p.x=p.spawnX; p.y=p.spawnY; p.vx=0; p.vy=0; p.grounded=false; p.iframe=1.2; p.hurtT=0;
+  p.ducking=false; p.sliding=false; p.h=PHYS.STAND_H; p.runCharge=0;
+  cam.x=Math.max(0,p.x-BASE_W/2); cam.lookX=0;
 }
 
-function drawForegroundPipes(xOff) {
-  ctx.fillStyle = PAL.copper;
-  for (var i = 0; i < 5; i++) {
-    var x = xOff + i * 90 + 20;
-    ctx.fillRect(x, 0, 8, 40);
-    ctx.fillStyle = PAL.rust;
-    ctx.fillRect(x, 36, 12, 6);
-    ctx.fillStyle = PAL.copper;
-  }
-}
+/* ---------------------------------------------------------------
+   16. ENEMIES & OBSTACLES UPDATE
+   --------------------------------------------------------------- */
+function aabb(a,b){ return a.x<b.x+b.w && a.x+a.w>b.x && a.y<b.y+b.h && a.y+a.h>b.y; }
+function pbox(){ return {x:player.x,y:player.y,w:player.w,h:player.h}; }
 
-// ---------- Beat marker "incoming" telegraphs ----------
-// Obstacles spawn off-screen right and scroll left toward Mick, timed to beat grid.
-var SPAWN_LEAD = 2.2; // seconds of travel time before hit point
-
-function updateSpawns(songTime, dt) {
-  while (nextBeatIndex < beatGrid.length && beatGrid[nextBeatIndex].time - SPAWN_LEAD <= songTime) {
-    var beat = beatGrid[nextBeatIndex];
-    var travel = SPAWN_LEAD; // seconds to travel from spawn x to hit x
-    var scrollSpeed = BASE_SCROLL_SPEED * speedMult;
-    var spawnX = MICK_X + scrollSpeed * travel;
-    if (spawnX < BASE_W + 20) spawnX = BASE_W + 20;
-    obstacles.push({
-      type: beat.type,
-      x: spawnX,
-      hitTime: beat.time,
-      resolved: false,
-      whackWindowOpen: false,
-      animTimer: 0
-    });
-    totalPipes += (beat.type === 'pipe') ? 1 : 0;
-    nextBeatIndex++;
-  }
-}
-
-// ---------- Update ----------
-var lastFrameTime = 0;
-var MAX_DT = 1 / 30; // delta cap to avoid spiral of death on tab-switch
-
-function update(dt) {
-  // hitstop freezes gameplay motion but not the timer itself (short)
-  if (hitstopTimer > 0) {
-    hitstopTimer -= dt;
-    renderFrame(0); // still render (idle)
-    return;
-  }
-
-  var scaledDt = dt * timeScale;
-
-  if (state === STATE.PLAY) {
-    var songTime = getSongTime();
-    elapsedGameTime = songTime;
-
-    // speed ramp every 30s
-    var bucket = Math.floor(songTime / SPEED_RAMP_INTERVAL);
-    if (bucket > lastRampBucket) {
-      lastRampBucket = bucket;
-      speedMult *= SPEED_RAMP_MULT;
+function updateEnemies(dt){
+  var p=player, pb=pbox();
+  // gunk blobs
+  world.enemies.forEach(function(en){
+    if(!en.alive) return;
+    en.animT+=dt;
+    en.x+=en.vx*dt;
+    // edge / wall turn
+    var aheadX = en.dir>0 ? en.x+en.w+2 : en.x-2;
+    var footY=en.y+en.h+2;
+    if(!solidAt(aheadX,footY) || solidAt(aheadX,en.y+en.h-6)){
+      en.dir*=-1; en.vx=Math.abs(en.vx)*en.dir; en.x+=en.dir*2;
     }
+    // gravity to keep grounded
+    var by=en.y+en.h;
+    if(!solidAt(en.x+en.w/2,by+2)){ en.y+=60*dt; }
+    // collide with player
+    if(aabb(pb,en)){
+      if(p.vy>60 && p.y+p.h < en.y+en.h*0.6){ // stomp
+        en.alive=false; p.vy=PHYS.STOMP_BOUNCE; p.jumping=true;
+        Audio2.sfx('stomp'); addScore(100,en.x,en.y,'+100'); stats.kills++;
+        spawnBurstFX(en.x+en.w/2,en.y+en.h/2,C.slimeHi);
+      } else if(p.whackT>0 && Math.abs((p.x+p.w/2)-(en.x+en.w/2))<40){
+        en.alive=false; Audio2.sfx('whack'); addScore(100,en.x,en.y,'+100'); stats.kills++;
+        spawnBurstFX(en.x+en.w/2,en.y+en.h/2,C.slimeHi);
+      } else if(p.iframe<=0){ loseHeart(false); }
+    }
+  });
 
-    var scrollSpeed = BASE_SCROLL_SPEED * speedMult;
+  // drip slimes
+  world.drips.forEach(function(d){
+    d.t+=dt;
+    if(d.phase==='idle'){ if(d.t>2.2){ d.phase='telegraph'; d.t=0; } }
+    else if(d.phase==='telegraph'){ if(d.t>1){ d.phase='drop'; d.dropY=d.y; d.dropVy=0; d.t=0; } }
+    else if(d.phase==='drop'){
+      d.dropVy+=1600*dt; d.dropY+=d.dropVy*dt;
+      // hit floor?
+      if(solidAt(d.x, d.dropY+6)){
+        // splat -> slick
+        d.phase='idle'; d.t=0;
+        var stx=Math.floor(d.x/TILE), sty=Math.floor((d.dropY+6)/TILE);
+        world.slickTiles.push({tx:stx, ty:sty, life:2.0});
+        spawnSplash(d.x,d.dropY,C.slimeHi);
+        Audio2.sfx('splash');
+      }
+      // hit player
+      if(Math.abs((p.x+p.w/2)-d.x)<10 && p.y<d.dropY+8 && p.y+p.h>d.dropY-8 && p.iframe<=0){
+        loseHeart(false); d.phase='idle'; d.t=0;
+      }
+      if(d.dropY>L.h*TILE){ d.phase='idle'; d.t=0; }
+    }
+  });
+  // slick tiles decay + apply
+  for(var si=world.slickTiles.length-1;si>=0;si--){
+    var sl=world.slickTiles[si]; sl.life-=dt;
+    if(sl.life<=0){ world.slickTiles.splice(si,1); continue; }
+    if(Math.floor((p.x+p.w/2)/TILE)===sl.tx && Math.floor((p.y+p.h)/TILE)===sl.ty && p.grounded){ p.onSlick=Math.max(p.onSlick,0.2); }
+  }
 
-    // parallax
-    parallaxOffsets[0] += scrollSpeed * 0.15 * scaledDt;
-    parallaxOffsets[1] += scrollSpeed * 0.45 * scaledDt;
-    parallaxOffsets[2] += scrollSpeed * 1.0 * scaledDt;
+  // burst pipes
+  world.bursts.forEach(function(b){
+    if(b.patched) return;
+    b.cycle+=dt;
+    b.spraying = (b.cycle%2)<1.0;
+    // whack to patch
+    var bb={x:b.x,y:b.y,w:b.w,h:b.h};
+    if(p.whackT>0 && Math.abs((p.x+p.w/2)-(b.x+b.w/2))<44 && Math.abs((p.y+p.h/2)-(b.y+b.h/2))<40){
+      b.patched=true; Audio2.sfx('whack'); addScore(200,b.x,b.y,'+200'); stats.patches++;
+      spawnBurstFX(b.x+b.w,b.y+b.h/2,'#dfe8ef');
+    }
+    // spray hurts
+    if(b.spraying){
+      var sprayBox={x:b.x+b.dir*TILE, y:b.y+6, w:TILE*2, h:TILE-12};
+      if(aabb(pb,sprayBox) && p.iframe<=0){ loseHeart(false); }
+    }
+  });
 
-    updateSpawns(songTime, scaledDt);
+  // pipe crabs
+  world.crabs.forEach(function(cr){
+    if(!cr.alive) return;
+    cr.t+=dt;
+    if(cr.phase==='in'){ if(cr.t>1.6){ cr.phase='out'; cr.t=0; } cr.ext=Math.max(0,cr.ext-dt*80); }
+    else { cr.ext=Math.min(20,cr.ext+dt*80); if(cr.t>1.2){ cr.phase='in'; cr.t=0; } }
+    var crb={x:cr.x-cr.ext, y:cr.y, w:cr.w, h:cr.h};
+    if(cr.phase==='out' && cr.ext>10){
+      if(p.whackT>0 && Math.abs((p.x+p.w/2)-(crb.x+crb.w/2))<40){
+        cr.alive=false; Audio2.sfx('whack'); addScore(150,cr.x,cr.y,'+150'); stats.kills++;
+        spawnBurstFX(cr.x,cr.y,C.rustHi);
+      } else if(aabb(pb,crb) && p.iframe<=0){ loseHeart(false); }
+    }
+  });
 
-    // move obstacles
-    for (var i = obstacles.length - 1; i >= 0; i--) {
-      var o = obstacles[i];
-      var timeToHit = o.hitTime - songTime;
-      // position derived from time-to-hit so it stays synced to audio
-      o.x = MICK_X + scrollSpeed * timeToHit;
-      o.animTimer += scaledDt;
+  // grinder fans
+  world.fans.forEach(function(fn){
+    fn.cyc+=dt;
+    var phase=(fn.cyc%4);
+    fn.speed = phase<2.5 ? 8 : 1.5; // fast then slow window
+    fn.spin+=fn.speed*dt;
+    var fb={x:fn.x-fn.r, y:fn.y-fn.r, w:fn.r*2, h:fn.r*2};
+    if(aabb(pb,fb) && p.iframe<=0 && fn.speed>4){ loseHeart(false); }
+  });
 
-      var hw = (o.type === 'pipe') ? PROP_W : GUNK_W;
-      var withinWindow = Math.abs(timeToHit) <= HIT_WINDOW;
-      o.whackWindowOpen = withinWindow;
+  // barrel spawners
+  world.barrelSpawns.forEach(function(bs){
+    bs.t+=dt;
+    if(bs.t>=bs.interval){ bs.t=0;
+      world.barrels.push({x:bs.x, y:bs.y, w:26, h:26, vx:-90, vy:0, spin:0, alive:true});
+    }
+  });
+  // barrels
+  for(var bi=world.barrels.length-1;bi>=0;bi--){
+    var ba=world.barrels[bi];
+    ba.spin+=ba.vx*dt*0.06;
+    ba.vy+=2000*dt; if(ba.vy>700)ba.vy=700;
+    var box={x:ba.x,y:ba.y,w:ba.w,h:ba.h};
+    var col=moveAndCollide(box, ba.vx*dt, 0);
+    ba.x=box.x; if(col.left||col.right){ // break on wall
+      spawnBurstFX(ba.x+ba.w/2,ba.y+ba.h/2,C.copperHi); world.barrels.splice(bi,1); continue; }
+    var box2={x:ba.x,y:ba.y,w:ba.w,h:ba.h};
+    var col2=moveAndCollide(box2,0,ba.vy*dt);
+    ba.y=box2.y; if(col2.down)ba.vy=0;
+    // player interaction
+    var bab={x:ba.x,y:ba.y,w:ba.w,h:ba.h};
+    if(aabb(pb,bab)){
+      if(p.sliding || (p.ducking)){ /* slide under: if player low enough, no hit */
+        if(p.y+p.h - (ba.y) > 8){ /* overlapping vertically enough -> break barrel */ }
+      }
+      if(p.vy>60 && p.y+p.h<ba.y+10){ p.vy=PHYS.STOMP_BOUNCE; spawnBurstFX(ba.x+ba.w/2,ba.y,C.copperHi); world.barrels.splice(bi,1); continue; }
+      else if(!(p.sliding && p.y+p.h < ba.y+ba.h) && p.iframe<=0){
+        // if sliding and low, dodge; else hit
+        if(!(p.sliding)) loseHeart(false);
+      }
+    }
+    if(ba.y>L.h*TILE){ world.barrels.splice(bi,1); }
+  }
 
-      if (!o.resolved) {
-        if (o.type === 'pipe') {
-          if (whackPressed && withinWindow) {
-            o.resolved = true;
-            o.result = 'patched';
-            patchedCount++;
-            flow = Math.min(FLOW_CAP, flow + 1);
-            maxFlow = Math.max(maxFlow, flow);
-            score += 100 * flow;
-            hitstopTimer = 0.06;
-            screenShake = Math.max(screenShake, 4);
-            spawnBurstFX(o.x + PROP_W / 2, GROUND_Y - PROP_H / 2 + 4);
-            mick.whacking = true; mick.whackTimer = 0.18;
-          } else if (timeToHit < -HIT_WINDOW) {
-            // missed
-            o.resolved = true;
-            o.result = 'missed';
-            flow = 0;
-            waterLevel = Math.min(WATER_NOTCHES, waterLevel + 1);
-            screenShake = Math.max(screenShake, 6);
-            spawnSplash(MICK_X + MICK_W / 2, GROUND_Y + 4);
-          }
-        } else {
-          // gunk: cleared by jump; touching while grounded = hit-stun
-          var mickBox = { x: MICK_X - 6, y: GROUND_Y - mick.y - MICK_H, w: MICK_W + 4, h: MICK_H };
-          var gunkBox = { x: o.x, y: GROUND_Y - GUNK_H, w: GUNK_W, h: GUNK_H };
-          var overlapX = mickBox.x < gunkBox.x + gunkBox.w && mickBox.x + mickBox.w > gunkBox.x;
-          if (overlapX) {
-            var mickBottom = GROUND_Y - mick.y;
-            var clearedByJump = (mick.y > 10); // airborne enough
-            if (!clearedByJump) {
-              o.resolved = true;
-              o.result = 'hit';
-              flow = 0;
-              waterLevel = Math.min(WATER_NOTCHES, waterLevel + 1);
-              mick.hitstun = 0.4;
-              screenShake = Math.max(screenShake, 6);
-              spawnSplash(MICK_X + MICK_W / 2, GROUND_Y + 4);
-            } else if (timeToHit < -0.05) {
-              o.resolved = true;
-              o.result = 'cleared';
-              score += 20;
-            }
-          }
+  // crumble grates
+  world.crumbles.forEach(function(cm){
+    if(cm.state==='gone'){ cm.t+=dt; if(cm.t>3){ cm.state='solid'; cm.t=0; } return; }
+    if(cm.state==='shaking'){ cm.t+=dt; if(cm.t>0.5){ cm.state='gone'; cm.t=0; Audio2.sfx('crumble'); spawnBurstFX(cm.tx*TILE+16,cm.ty*TILE+16,C.rustHi); } return; }
+    // solid: if player standing on it
+    var onTop = Math.abs((player.y+player.h)-(cm.ty*TILE))<4 &&
+                (player.x+player.w>cm.tx*TILE+2)&&(player.x<cm.tx*TILE+TILE-2) && player.grounded;
+    if(onTop){ cm.state='shaking'; cm.t=0; }
+  });
+
+  // geyser jet (carries player up)
+  updateGeyser(dt);
+
+  // pickups
+  world.pickups.forEach(function(pk){
+    if(pk.got) return; pk.bob+=dt;
+    var b={x:pk.x-8,y:pk.y-8+Math.sin(pk.bob*3)*3,w:16,h:16};
+    if(aabb(pb,b)){ pk.got=true;
+      if(pk.kind==='heart'){ if(hud.hearts<3)hud.hearts++; Audio2.sfx('heart'); floatText(pk.x,pk.y-10,'+HEART',C.heartHi); }
+    }
+  });
+  // fittings
+  world.fittings.forEach(function(ft){
+    if(ft.got) return; ft.bob+=dt;
+    var b={x:ft.x-8,y:ft.y-8+Math.sin(ft.bob*3)*3,w:16,h:16};
+    if(aabb(pb,b)){ ft.got=true; hud.fittings++; stats.fittings++; Audio2.sfx('coin'); addScore(50,ft.x,ft.y,'+50'); }
+  });
+}
+
+/* Geyser: when valve turned, geyser cycles 3s on / 1s off; jet carries player up */
+function updateGeyser(dt){
+  var p=player;
+  world.valves.forEach(function(v){
+    if(v.kind!=='geyser'||!v.turned) return;
+    v.drainTimer+=dt; // reuse as cycle timer
+    var cyc=v.drainTimer%4;
+    v.active = cyc<3;
+    // find geyser column (nearest to valve, but columns are at fixed x)
+    world.geyserState.forEach(function(gc){
+      var colX=gc.x*TILE, topY=gc.y0*TILE, botY=(gc.y1+1)*TILE;
+      gc.on=v.active;
+      if(v.active){
+        // churn particles
+        if(Math.random()<0.6) world.particles.push({x:colX+8+Math.random()*16,y:botY-Math.random()*20,vx:(Math.random()-0.5)*30,vy:-200-Math.random()*100,life:0.6,max:0.6,r:2,col:C.foam,grav:100});
+        // lift player if standing in column x-range and within jet height
+        if(p.x+p.w>colX+2 && p.x<colX+TILE-2 && p.y+p.h>topY && p.y+p.h<botY+8){
+          p.vy=-260; p.grounded=false; p.jumping=false;
         }
       }
+    });
+  });
+}
 
-      if (o.x < -40) {
-        obstacles.splice(i, 1);
-      }
+function addScore(n,x,y,label){
+  hud.score+=n;
+  if(label) floatText(x,y-8,label,C.gold);
+}
+
+/* ---------------------------------------------------------------
+   17. VALVES + WATER SYSTEMS
+   --------------------------------------------------------------- */
+function updateValves(dt){
+  var p=player;
+  var Iwrench = Input.wrenchHeld||touchState.wrench;
+  var near=null, nearDist=1e9;
+  world.valves.forEach(function(v){
+    if(v.kind==='flow' && v.turned) return; // permanent
+    var vx=v.x+TILE/2, vy=v.y+TILE/2;
+    var d=Math.abs((p.x+p.w/2)-vx)+Math.abs((p.y+p.h/2)-vy);
+    if(d<48 && Math.abs((p.y+p.h)-(v.y+TILE))<40){ if(d<nearDist){ nearDist=d; near=v; } }
+  });
+  world.nearValve=near;
+
+  if(near){
+    near.seen=true; world.valveSeen[near.kind]=true;
+  }
+
+  // cranking
+  if(near && Iwrench && p.grounded){
+    p.cranking=near; near.turning=true;
+    var speed = near.kind==='master' ? 1/2.4 : 1/0.6; // master is slower/dramatic
+    near.hold+=dt;
+    near.angle+=dt*10;
+    if(Math.floor(near.hold*8)!==Math.floor((near.hold-dt)*8)) Audio2.sfx('ratchet');
+    p.crankT+=dt;
+    // completion
+    if(near.kind==='master'){
+      updateMaster(dt, near, Iwrench);
+    } else if(near.hold>=0.6 && !near.turned){
+      completeValve(near);
     }
-
-    // player physics (y = height above ground; vy negative = moving up)
-    if (mick.hitstun > 0) {
-      mick.hitstun -= scaledDt;
-    } else {
-      if (jumpPressed && mick.onGround) {
-        mick.vy = JUMP_VEL;
-        mick.onGround = false;
-        mick.squash = 1; // trigger stretch
-      }
-      mick.vy += GRAVITY * scaledDt;
-      mick.y += (-mick.vy) * scaledDt;
-      if (mick.y <= 0) {
-        mick.y = 0;
-        if (!mick.onGround) { mick.squash = -1; } // squash on landing
-        mick.onGround = true;
-        mick.vy = 0;
-      } else {
-        mick.onGround = false;
-      }
-    }
-
-    if (mick.squash !== 0) {
-      mick.squash *= (1 - Math.min(1, scaledDt * 10));
-      if (Math.abs(mick.squash) < 0.02) mick.squash = 0;
-    }
-
-    // animation state machine
-    if (mick.hitstun > 0) {
-      mick.anim = 'hitstun';
-    } else if (mick.whacking) {
-      mick.anim = 'whack';
-      mick.whackTimer -= scaledDt;
-      if (mick.whackTimer <= 0) mick.whacking = false;
-    } else if (!mick.onGround) {
-      mick.anim = 'jump';
-    } else {
-      mick.anim = 'run';
-    }
-
-    if (mick.anim === 'run') {
-      mick.animTimer += scaledDt;
-      var frameDur = 0.09 / Math.max(0.4, speedMult * 0.6);
-      if (mick.animTimer >= frameDur) {
-        mick.animTimer -= frameDur;
-        mick.animFrame = (mick.animFrame + 1) % 4;
-      }
-    } else if (mick.anim === 'whack') {
-      mick.animTimer += scaledDt;
-      mick.animFrame = Math.floor(mick.animTimer / 0.09) % 2;
-    }
-
-    // particles
-    updateParticles(scaledDt);
-
-    // screen shake decay
-    if (screenShake > 0) screenShake = Math.max(0, screenShake - scaledDt * 30);
-
-    // reset one-shot inputs
-    jumpPressed = false; whackPressed = false;
-
-    // win/lose checks
-    if (waterLevel >= WATER_NOTCHES) {
-      triggerLose();
-    } else if (audioReady && !audioFailed && audio.ended) {
-      triggerWin();
-    } else if ((audioFailed || !audioReady) && audioStarted && songTime >= songDuration) {
-      triggerWin();
-    }
-  } else if (state === STATE.LOSE) {
-    loseSlowmo = Math.min(1, loseSlowmo + dt * 0.6);
-    updateParticles(dt * (1 - loseSlowmo * 0.85));
-    if (screenShake > 0) screenShake = Math.max(0, screenShake - dt * 30);
-    jumpPressed = false; whackPressed = false;
-  } else if (state === STATE.WIN) {
-    for (var c = 0; c < confetti.length; c++) {
-      var cf = confetti[c];
-      cf.x += cf.vx * dt;
-      cf.y += cf.vy * dt;
-      cf.rot += cf.vrot * dt;
-      if (cf.y > BASE_H + 20) {
-        cf.y = -20;
-        cf.x = Math.random() * BASE_W;
-      }
-    }
-    updateParticles(dt);
-    jumpPressed = false; whackPressed = false;
   } else {
-    jumpPressed = false; whackPressed = false;
+    if(p.cranking){ p.cranking.turning=false; }
+    p.cranking=null;
+    world.valves.forEach(function(v){ if(!v.turned && v.kind!=='master'){ v.hold=Math.max(0,v.hold-dt*0.5); } });
   }
 
-  renderFrame(scaledDt);
-}
-
-function updateParticles(dt) {
-  for (var i = 0; i < MAX_PARTICLES; i++) {
-    var p = particlePool[i];
-    if (!p.active) continue;
-    p.life -= dt;
-    if (p.life <= 0) { p.active = false; continue; }
-    p.x += p.vx * dt;
-    p.y += p.vy * dt;
-    if (p.type === 'spark') { p.vy += 300 * dt; }
-    if (p.type === 'steam') { p.vy *= (1 - dt * 0.5); p.vx *= (1 - dt * 0.5); }
-    if (p.type === 'splash') { p.vy += 250 * dt; }
-  }
-}
-
-function triggerWin() {
-  state = STATE.WIN;
-  spawnConfetti();
-  try { audio.pause(); } catch (e) {}
-}
-function triggerLose() {
-  state = STATE.LOSE;
-  loseSlowmo = 0;
-  try { audio.pause(); } catch (e) {}
-}
-
-// ---------- Render ----------
-function renderFrame() {
-  ctx.save();
-  var shakeX = 0, shakeY = 0;
-  if (screenShake > 0) {
-    shakeX = (Math.random() - 0.5) * screenShake;
-    shakeY = (Math.random() - 0.5) * screenShake;
-    ctx.translate(shakeX, shakeY);
-  }
-
-  // Background
-  ctx.fillStyle = PAL.navy;
-  ctx.fillRect(-10, -10, BASE_W + 20, BASE_H + 20);
-
-  drawParallaxLayer(parallaxOffsets[0], 1, drawCitySilhouette);
-  drawParallaxLayer(parallaxOffsets[1], 1, drawBrickWall);
-  drawParallaxLayer(parallaxOffsets[2], 1, drawForegroundPipes);
-
-  // Floor
-  ctx.fillStyle = PAL.brickDark;
-  ctx.fillRect(-10, GROUND_Y, BASE_W + 20, BASE_H - GROUND_Y + 10);
-  ctx.fillStyle = '#2A1B15';
-  ctx.fillRect(-10, GROUND_Y, BASE_W + 20, 3);
-
-  if (state === STATE.TITLE) {
-    drawTitleScreen();
-  } else {
-    drawObstacles();
-    drawMick();
-    drawParticles();
-    drawWaterPlane();
-    drawHUD();
-    if (state === STATE.WIN) drawWinScreen();
-    if (state === STATE.LOSE) drawLoseScreen();
-  }
-
-  // scanline overlay (subtle CRT feel), applied globally
-  drawScanlines();
-
-  ctx.restore();
-}
-
-function drawObstacles() {
-  for (var i = 0; i < obstacles.length; i++) {
-    var o = obstacles[i];
-    if (o.x < -40 || o.x > BASE_W + 20) continue;
-    if (o.type === 'pipe') {
-      var frame;
-      if (o.resolved && o.result === 'patched') {
-        frame = SPR.pipePatched;
-      } else {
-        var idx = Math.floor(o.animTimer * 6) % 2;
-        frame = SPR.pipeBurst[idx];
+  // drain refill timers
+  world.drainState.forEach(function(ds){
+    if(ds.drained){
+      ds.timer-=dt;
+      // warning: water rising in last 3s
+      if(ds.timer<3){ ds.level = 1-(ds.timer/3); } else { ds.level=0; }
+      if(ds.timer<=0){ ds.drained=false; ds.level=1;
+        // splash + reset the valve so it can be turned again
+        if(ds.valveIdx>=0){ var v=world.valves[ds.valveIdx]; v.turned=false; v.hold=0; v.angle=0; }
+        spawnSplash((ds.r.x0+ds.r.x1)/2*TILE+16, ds.r.y0*TILE+8, C.waterHi);
       }
-      var py = GROUND_Y - PROP_H - 20;
-      // telegraph glow when whack window open
-      if (o.whackWindowOpen && !o.resolved) {
-        ctx.save();
-        ctx.globalAlpha = 0.35 + Math.sin(performance.now() / 40) * 0.15;
-        ctx.fillStyle = PAL.slime;
-        ctx.fillRect(o.x - 2, py - 2, PROP_W + 4, PROP_H + 4);
-        ctx.restore();
+    }
+  });
+}
+
+function completeValve(v){
+  v.turned=true; v.hold=0.6; Audio2.sfx('ratchet');
+  player.cranking=null; player.crankT=0;
+  world.shake=0.6;
+  if(v.kind==='drain'){
+    // find its drain region
+    world.drainState.forEach(function(ds){
+      if(ds.valveIdx>=0 && world.valves[ds.valveIdx]===v){
+        ds.drained=true; ds.timer=12; ds.level=0;
+        Audio2.sfx('splash');
+        // glug bubbles
+        for(var i=0;i<16;i++) spawnSplash((ds.r.x0+ds.r.x1)/2*TILE+16, ds.r.y1*TILE, C.waterHi);
+        floatText(v.x, v.y-16, 'DRAINED! 12s', C.waterHi);
       }
-      ctx.drawImage(frame, Math.round(o.x), py, PROP_W, PROP_H);
-    } else {
-      if (o.resolved && (o.result === 'hit')) continue;
-      var gidx = Math.floor(o.animTimer * 4) % 2;
-      var gframe = SPR.gunk[gidx];
-      var gy = GROUND_Y - GUNK_H;
-      ctx.drawImage(gframe, Math.round(o.x), gy, GUNK_W, GUNK_H);
+    });
+  } else if(v.kind==='flow'){
+    Audio2.sfx('geyseron');
+    floatText(v.x, v.y-16, 'BASIN FILLING', C.waterHi);
+  } else if(v.kind==='geyser'){
+    v.drainTimer=0; Audio2.sfx('geyser');
+    floatText(v.x, v.y-16, 'GEYSER ON', C.foam);
+  }
+}
+
+/* Basin fill + flow platform rise (continuous while flow valve open) */
+function updateWaterSystems(dt){
+  // basin fill
+  var flowOpen=false;
+  world.valves.forEach(function(v){ if(v.kind==='flow'&&v.turned) flowOpen=true; });
+  world.basinState.forEach(function(bs){
+    if(flowOpen && bs.fill<1){ bs.fill=Math.min(1,bs.fill+dt*0.18); if(Math.random()<0.3){ var r=bs.r; spawnSplash((r.x0+r.x1)/2*TILE+16, (r.y1)*TILE, C.waterHi);} }
+    // ride flow platform up with the fill
+    world.flowPlats.forEach(function(fp){
+      var ftx=Math.floor(fp.x/TILE), fty=Math.floor(fp.baseY/TILE);
+      if(ftx>=bs.r.x0-1&&ftx<=bs.r.x1+1){
+        var topY=bs.r.y0*TILE, botY=(bs.r.y1+1)*TILE;
+        fp.y = botY - fp.h - bs.fill*(botY-topY-fp.h);
+      }
+    });
+  });
+}
+
+/* Master valve 3-stage crank */
+function updateMaster(dt, v, held){
+  if(!held){ world.winCrankHold=Math.max(0,world.winCrankHold-dt*0.5); return; }
+  world.winCrankHold+=dt;
+  v.angle+=dt*8;
+  world.shake=0.4;
+  if(Math.floor(world.winCrankHold*6)!==Math.floor((world.winCrankHold-dt)*6)) Audio2.sfx('ratchet');
+  // 3 stages, each ~0.9s
+  var stage=Math.floor(world.winCrankHold/0.9);
+  if(stage>world.winStage && stage<=3){
+    world.winStage=stage; world.shake=1; Audio2.sfx('geyseron');
+    floatText(v.x, v.y-20-stage*10, 'STAGE '+stage+'!', C.gold);
+  }
+  if(world.winStage>=3){
+    triggerWin();
+  }
+}
+function triggerWin(){
+  if(STATE==='win') return;
+  STATE='win'; player.victory=true; player.anim='victory'; player.winTimer=0;
+  Audio2.sfx('fanfare');
+  // final stats
+  stats.endTime=globalTime;
+  stats.timeSec=Math.max(0, (stats.endTime-stats.startTime));
+  stats.bonus = hud.hearts*500 + Math.max(0, 3000-Math.floor(stats.timeSec)*10);
+  hud.score+=stats.bonus;
+}
+
+/* ---------------------------------------------------------------
+   18. CHECKPOINTS, TEACH SIGNS, BANNERS, IDLE ARROW
+   --------------------------------------------------------------- */
+function updateCheckpoints(dt){
+  var p=player;
+  world.checkpoints.forEach(function(c){
+    if(c.flash>0)c.flash-=dt;
+    var cx=c.x+TILE/2;
+    if(!c.active && Math.abs((p.x+p.w/2)-cx)<TILE && Math.abs((p.y+p.h)-(c.y+TILE))<TILE){
+      c.active=true; c.flash=1; Audio2.sfx('ratchet');
+      p.spawnX=c.x; p.spawnY=c.y+TILE-PHYS.STAND_H-4;
+      hud.hearts=3; // refill at checkpoint (kind)
+      floatText(c.x, c.y-16, 'CHECKPOINT!', C.slimeHi);
+    }
+  });
+  // teach signs reveal when near
+  world.teaches.forEach(function(t){
+    var near=Math.abs((p.x+p.w/2)-(t.x+TILE/2))<TILE*3;
+    t.alpha = near ? Math.min(1,t.alpha+dt*3) : Math.max(0,t.alpha-dt*2);
+  });
+  // zone banners
+  world.banners.forEach(function(b){
+    if(!b.triggered && p.x+p.w/2 > b.x-BASE_W/2){
+      b.triggered=true; b.timer=2.6; world.curZone=b.n+1;
+    }
+    if(b.timer>0)b.timer-=dt;
+  });
+  // idle arrow
+  var moving = Math.abs(p.vx)>10 || Input.left||Input.right||touchState.left||touchState.right||!p.grounded;
+  if(moving) idleTimer=0; else idleTimer+=dt;
+}
+
+/* ---------------------------------------------------------------
+   19. WRENCH WHACK (attack) — triggered on wrench tap when not near valve
+   --------------------------------------------------------------- */
+var prevWrench=false;
+function updateWhack(dt){
+  var Iwrench = Input.wrenchHeld||touchState.wrench;
+  var pressed = Iwrench && !prevWrench;
+  prevWrench=Iwrench;
+  if(pressed && !player.cranking && !world.nearValve){
+    player.whackT=0.24;
+    Audio2.sfx('whack');
+  }
+}
+
+/* ---------------------------------------------------------------
+   20. CAMERA
+   --------------------------------------------------------------- */
+function updateCamera(dt){
+  var p=player;
+  var targetLook = p.facing*60;
+  cam.lookX += (targetLook-cam.lookX)*Math.min(1,dt*4);
+  var tx = p.x+p.w/2 - BASE_W/2 + cam.lookX;
+  var ty = p.y+p.h/2 - BASE_H/2;
+  // smooth follow, clamp to level bounds
+  cam.x += (tx-cam.x)*Math.min(1,dt*8);
+  cam.y += (ty-cam.y)*Math.min(1,dt*6);
+  cam.x=clamp(cam.x, 0, L.w*TILE-BASE_W);
+  cam.y=clamp(cam.y, -TILE, L.h*TILE-BASE_H);
+}
+
+/* ---------------------------------------------------------------
+   21. RENDER
+   --------------------------------------------------------------- */
+var canvas, ctx;
+function initCanvas(){
+  canvas=document.getElementById('game');
+  ctx=canvas.getContext('2d',{alpha:false});
+  canvas.width=BASE_W; canvas.height=BASE_H;
+  ctx.imageSmoothingEnabled=false;
+  resizeCanvas();
+  window.addEventListener('resize',resizeCanvas);
+}
+function resizeCanvas(){
+  var vw=window.innerWidth, vh=window.innerHeight;
+  var scale=Math.max(1, Math.floor(Math.min(vw/BASE_W, vh/BASE_H)*2)/2); // allow .5 steps
+  if(scale<1) scale=Math.min(vw/BASE_W,vh/BASE_H);
+  var cw=BASE_W*scale, chh=BASE_H*scale;
+  if(cw>vw||chh>vh){ scale=Math.min(vw/BASE_W,vh/BASE_H); cw=BASE_W*scale; chh=BASE_H*scale; }
+  canvas.style.width=cw+'px'; canvas.style.height=chh+'px';
+}
+
+function beatTimeNow(){ // song-synced when playing, wall clock otherwise
+  var el=document.getElementById('bgm');
+  if(el && !el.paused && el.currentTime>0) return el.currentTime-0.046;
+  return globalTime;
+}
+function beatPulse(){ // 0..1 pulse on 92 BPM
+  var beatLen=60/PHYS.BPM;
+  var ph=(beatTimeNow()%beatLen)/beatLen;
+  return 0.5+0.5*Math.cos(ph*Math.PI*2);
+}
+function measureBlink(){ // sharp 0..1 flash on the downbeat of every 4-beat measure
+  var beatLen=60/PHYS.BPM, measLen=beatLen*4;
+  var t=beatTimeNow(); if(t<0) t+=measLen;
+  var ph=(t%measLen)/measLen;
+  return ph<0.22 ? Math.pow(1-ph/0.22,2) : 0;
+}
+
+function render(){
+  var g=ctx;
+  var sx = world&&world.shake>0 ? (Math.random()-0.5)*world.shake*8 : 0;
+  var sy = world&&world.shake>0 ? (Math.random()-0.5)*world.shake*8 : 0;
+  g.save();
+  // background gradient
+  var grd=g.createLinearGradient(0,0,0,BASE_H);
+  grd.addColorStop(0,C.bg0); grd.addColorStop(1,C.bgFar);
+  g.fillStyle=grd; g.fillRect(0,0,BASE_W,BASE_H);
+
+  if(STATE==='title'){ drawTitle(g); g.restore(); return; }
+  if(STATE==='howto'){ drawHowTo(g); g.restore(); return; }
+
+  g.translate(sx,sy);
+  drawParallax(g);
+  drawLevel(g);
+  drawWaterAndSpecial(g);
+  drawEntities(g);
+  drawPlayer(g);
+  drawParticles(g);
+  drawForeground(g);
+  g.restore();
+
+  drawHUD(g);
+  drawSigns(g);
+  if(STATE==='win') drawWin(g);
+  if(STATE==='paused') drawPause(g);
+}
+
+/* Parallax: 3 layers */
+function drawParallax(g){
+  // far arches (0.25x)
+  var arch=ATLAS.arch;
+  if(arch){
+    var pxl=-(cam.x*0.25)%(arch.width);
+    for(var x=pxl-arch.width;x<BASE_W;x+=arch.width){
+      g.globalAlpha=0.5; g.drawImage(arch,Math.floor(x),BASE_H-arch.height-10); g.globalAlpha=1;
+    }
+  }
+  // mid stonework band (0.5x) + chains
+  g.globalAlpha=0.35;
+  var mo=-(cam.x*0.5)%128;
+  for(var mx=mo-128;mx<BASE_W;mx+=128){
+    g.fillStyle=C.bg2; g.fillRect(Math.floor(mx),40,60,BASE_H-60);
+    g.fillStyle=C.bg1; g.fillRect(Math.floor(mx)+60,60,40,BASE_H-80);
+    // chain
+    if(ATLAS.chain){ g.drawImage(ATLAS.chain, Math.floor(mx)+30, 30); }
+  }
+  g.globalAlpha=1;
+}
+
+/* Draw the tile grid within camera view */
+function drawLevel(g){
+  var x0=Math.floor(cam.x/TILE)-1, x1=Math.ceil((cam.x+BASE_W)/TILE)+1;
+  var y0=Math.floor(cam.y/TILE)-1, y1=Math.ceil((cam.y+BASE_H)/TILE)+1;
+  for(var ty=Math.max(0,y0);ty<Math.min(L.h,y1);ty++){
+    for(var tx=Math.max(0,x0);tx<Math.min(L.w,x1);tx++){
+      var cell=L.grid[ty][tx];
+      var dx=Math.floor(tx*TILE-cam.x), dy=Math.floor(ty*TILE-cam.y);
+      if(cell){
+        var atl=tileAtlasFor(cell);
+        if(atl) g.drawImage(atl,dx,dy);
+      }
+      // deco
+      var d=L.deco[ty][tx];
+      if(d==='lamp' && ATLAS.lamp){
+        g.drawImage(ATLAS.lamp,dx,dy);
+        // warm glow pool: soft per-beat pulse + bright blink every 4 beats
+        var pulse=0.45+0.15*beatPulse()+0.55*measureBlink();
+        var rg=g.createRadialGradient(dx+16,dy+16,4,dx+16,dy+16,40);
+        rg.addColorStop(0,'rgba(255,190,87,'+(0.35*pulse)+')'); rg.addColorStop(1,'rgba(255,190,87,0)');
+        g.fillStyle=rg; g.fillRect(dx-24,dy-24,80,80);
+      } else if(d==='chain' && ATLAS.chain){ g.drawImage(ATLAS.chain,dx+12,dy); }
+      else if(d==='brick'){ g.fillStyle=C.bg1; g.fillRect(dx,dy,TILE,TILE); }
+    }
+  }
+  // crumble shake offset overlay
+  world.crumbles.forEach(function(cm){
+    if(cm.state==='shaking'){
+      var dx=Math.floor(cm.tx*TILE-cam.x)+(Math.random()-0.5)*3, dy=Math.floor(cm.ty*TILE-cam.y);
+      if(ATLAS.crumble) g.drawImage(ATLAS.crumble,Math.floor(dx),dy);
+    } else if(cm.state==='gone'){
+      // draw empty (nothing)
+    }
+  });
+  // slime drips sliding down stone (cosmetic motif) — a few animated seams
+  drawSlimeMotif(g,x0,x1,y0,y1);
+}
+
+function tileAtlasFor(cell){
+  if(cell.t==='stone'){
+    if(cell.v==='crack') return ATLAS.stoneCrack;
+    if(cell.v==='moss') return ATLAS.stoneMoss;
+    if(cell.v==='wet') return ATLAS.stoneWet;
+    return ATLAS.stone;
+  }
+  if(cell.t==='steel'){
+    if(cell.v==='rust') return ATLAS.steelRust;
+    if(cell.v==='vent') return ATLAS.steelVent;
+    return ATLAS.steel;
+  }
+  if(cell.t==='grate') return ATLAS.grate;
+  if(cell.t==='crumble') return ATLAS.crumble;
+  if(cell.t==='pipeV') return ATLAS.pipeV;
+  if(cell.t==='pipeH') return ATLAS.pipeH;
+  return null;
+}
+
+function drawSlimeMotif(g,x0,x1,y0,y1){
+  // Deterministic slime drips at certain columns on wet/mossy stone seams.
+  for(var tx=Math.max(0,x0);tx<Math.min(L.w,x1);tx++){
+    if((tx*7)%13===0){
+      var cell=L.grid[Math.max(0,Math.min(L.h-1,Math.floor(cam.y/TILE)+2))]&&L.grid[Math.floor(cam.y/TILE)+2] ? null:null;
+      // find a wall column: draw a slow slime drip animation
+      var seed=tx*3.7;
+      var yBase=(Math.floor(cam.y/TILE)+2)*TILE;
+      var slidePos=(globalTime*8+seed*40)% (BASE_H);
+      var dx=Math.floor(tx*TILE-cam.x)+ (Math.floor(rnd(seed)*20));
+      if(dx<0||dx>BASE_W) continue;
+      // only draw if there's stone at that column near top of view
+      var cty=Math.floor(cam.y/TILE)+1;
+      if(cty>=0&&cty<L.h&&L.grid[cty][tx]&&L.grid[cty][tx].t==='stone'){
+        var dy=(cty+1)*TILE-cam.y;
+        g.fillStyle=C.slimeDk; g.fillRect(dx,dy,2,10);
+        g.fillStyle=C.slime; g.fillRect(dx,dy+(slidePos%24),2,4);
+        g.fillStyle=C.slimeHi; g.fillRect(dx,dy+(slidePos%24),1,2);
+      }
     }
   }
 }
 
-function drawMick() {
-  var drawX = MICK_X;
-  var drawY = GROUND_Y - MICK_H - mick.y;
-
-  var scaleX = 1, scaleY = 1;
-  if (mick.squash > 0) { // jump stretch
-    scaleY = 1 + mick.squash * 0.18;
-    scaleX = 1 - mick.squash * 0.12;
-  } else if (mick.squash < 0) { // land squash
-    scaleY = 1 + mick.squash * 0.22;
-    scaleX = 1 - mick.squash * 0.16;
+/* Water bodies, drainable pits (with level), basins, geyser, pits */
+function drawWaterAndSpecial(g){
+  var x0=Math.floor(cam.x/TILE)-1, x1=Math.ceil((cam.x+BASE_W)/TILE)+1;
+  var y0=Math.floor(cam.y/TILE)-1, y1=Math.ceil((cam.y+BASE_H)/TILE)+1;
+  // lethal + surface water tiles
+  for(var ty=Math.max(0,y0);ty<Math.min(L.h,y1);ty++){
+    for(var tx=Math.max(0,x0);tx<Math.min(L.w,x1);tx++){
+      var w=L.water[ty][tx];
+      if(w){
+        var dx=Math.floor(tx*TILE-cam.x), dy=Math.floor(ty*TILE-cam.y);
+        drawWaterCell(g,dx,dy,tx,ty, w==='surface');
+      }
+    }
   }
-
-  var sprite;
-  if (mick.anim === 'hitstun') {
-    sprite = SPR.mickHitstun;
-  } else if (mick.anim === 'jump') {
-    sprite = SPR.mickJump;
-  } else if (mick.anim === 'whack') {
-    sprite = SPR.mickWhack[mick.animFrame % 2];
-  } else {
-    sprite = SPR.mickRun[mick.animFrame % 4];
+  // bottomless pits (dark shafts)
+  for(var ty2=Math.max(0,y0);ty2<Math.min(L.h,y1);ty2++){
+    for(var tx2=Math.max(0,x0);tx2<Math.min(L.w,x1);tx2++){
+      if(L.special[ty2][tx2]==='pit'){
+        var dx2=Math.floor(tx2*TILE-cam.x), dy2=Math.floor(ty2*TILE-cam.y);
+        var grd=g.createLinearGradient(0,dy2,0,dy2+TILE);
+        grd.addColorStop(0,'#0a1018'); grd.addColorStop(1,'#000');
+        g.fillStyle=grd; g.fillRect(dx2,dy2,TILE,TILE);
+      }
+    }
   }
+  // drainable regions
+  world.drainState.forEach(function(ds){
+    var r=ds.r;
+    var topPix=r.y0*TILE, botPix=(r.y1+1)*TILE, fullH=botPix-topPix;
+    var waterH;
+    if(!ds.drained){ waterH=fullH; }
+    else { waterH= ds.level*fullH; } // rises from 0 as timer runs low
+    var dx=Math.floor(r.x0*TILE-cam.x), dyTop=Math.floor((botPix-waterH)-cam.y);
+    var wpx=(r.x1-r.x0+1)*TILE;
+    if(waterH>0){
+      g.fillStyle='rgba(46,134,171,0.72)';
+      g.fillRect(dx,dyTop,wpx,Math.floor(waterH));
+      // surface line
+      g.fillStyle=C.waterHi; g.fillRect(dx,dyTop,wpx,2);
+      // animated wobble
+      for(var wx=0;wx<wpx;wx+=6){ var wob=Math.sin((globalTime*4)+(wx*0.3))*1.5; g.fillStyle=C.foam; g.fillRect(dx+wx,Math.floor(dyTop+wob),3,1); }
+    }
+    // draining bubbles
+    if(ds.drained && ds.timer>3){
+      if(Math.random()<0.5){ var bx=dx+Math.random()*wpx; g.fillStyle=C.foam; g.fillRect(Math.floor(bx),Math.floor(botPix-cam.y-Math.random()*10),2,2); }
+    }
+    // countdown ring drawn near linked valve
+  });
+  // basin water
+  world.basinState.forEach(function(bs){
+    var r=bs.r; if(bs.fill<=0) return;
+    var topPix=r.y0*TILE, botPix=(r.y1+1)*TILE, fullH=botPix-topPix;
+    var wh=bs.fill*fullH;
+    var dx=Math.floor(r.x0*TILE-cam.x), dyTop=Math.floor((botPix-wh)-cam.y);
+    var wpx=(r.x1-r.x0+1)*TILE;
+    g.fillStyle='rgba(46,134,171,0.7)'; g.fillRect(dx,dyTop,wpx,Math.floor(wh));
+    g.fillStyle=C.waterHi; g.fillRect(dx,dyTop,wpx,2);
+  });
+  // geyser jets
+  world.geyserState.forEach(function(gc){
+    if(!gc.on) return;
+    var colX=Math.floor(gc.x*TILE-cam.x), topY=Math.floor(gc.y0*TILE-cam.y), botY=Math.floor((gc.y1+1)*TILE-cam.y);
+    g.fillStyle='rgba(87,182,214,0.55)'; g.fillRect(colX+6,topY,TILE-12,botY-topY);
+    g.fillStyle=C.foam;
+    for(var yy=topY;yy<botY;yy+=6){ var wob=Math.sin(globalTime*20+yy*0.2)*3; g.fillRect(colX+10+wob,yy,TILE-20,3); }
+  });
+}
 
-  ctx.save();
-  var cx = drawX + MICK_W / 2, cy = drawY + MICK_H;
-  ctx.translate(cx, cy);
-  ctx.scale(scaleX, scaleY);
-  ctx.translate(-MICK_W / 2, -MICK_H);
-  ctx.drawImage(sprite, 0, 0, MICK_W, MICK_H);
-  ctx.restore();
+function drawWaterCell(g,dx,dy,tx,ty,surface){
+  g.fillStyle='rgba(28,85,112,0.85)';
+  g.fillRect(dx,dy,TILE,TILE);
+  g.fillStyle='rgba(46,134,171,0.4)';
+  g.fillRect(dx,dy,TILE,TILE);
+  if(surface){
+    var wob=Math.sin(globalTime*3+tx*0.6)*1.5;
+    g.fillStyle=C.waterHi; g.fillRect(dx,dy+Math.floor(wob),TILE,2);
+    g.fillStyle=C.foam;
+    for(var i=0;i<TILE;i+=8){ g.fillRect(dx+i,dy+Math.floor(Math.sin(globalTime*4+i)*1.5),3,1); }
+    // occasional bubble
+    if(rnd(tx*3+Math.floor(globalTime*2))>0.7){ g.fillStyle=C.foam; g.fillRect(dx+ (Math.floor(rnd(tx)*TILE)),dy+8+ (Math.floor(globalTime*10)%16),2,2); }
+  }
+}
 
-  // splash feet when water is high
-  if (waterLevel >= WATER_NOTCHES * 0.5 && mick.onGround) {
-    var waterTopY = getWaterTopY();
-    if (drawY + MICK_H > waterTopY - 2) {
-      ctx.fillStyle = PAL.waterFoam;
-      ctx.globalAlpha = 0.6;
-      ctx.fillRect(drawX - 1, waterTopY - 1, MICK_W + 2, 2);
-      ctx.globalAlpha = 1;
+/* Entities render */
+function drawEntities(g){
+  // fittings
+  world.fittings.forEach(function(ft){ if(ft.got)return; var dx=ft.x-cam.x-9, dy=ft.y-cam.y-9+Math.sin(ft.bob*3)*3; if(SPR.fitting)g.drawImage(SPR.fitting,Math.floor(dx),Math.floor(dy)); });
+  // hearts
+  world.pickups.forEach(function(pk){ if(pk.got)return; var dx=pk.x-cam.x-8, dy=pk.y-cam.y-8+Math.sin(pk.bob*3)*3; if(SPR.heart)g.drawImage(SPR.heart,Math.floor(dx),Math.floor(dy)); });
+  // blobs
+  world.enemies.forEach(function(en){ if(!en.alive)return; var f=Math.floor(en.animT*4)%2? SPR.blob1:SPR.blob0; var dx=en.x-cam.x, dy=en.y-cam.y; if(f)g.drawImage(f,Math.floor(dx),Math.floor(dy)); });
+  // drips
+  world.drips.forEach(function(d){
+    var dx=d.x-cam.x, dyTop=d.ty*TILE+TILE-cam.y;
+    if(d.phase==='telegraph'){ var grow=Math.min(6,d.t*8); g.fillStyle=C.slime; g.fillRect(Math.floor(dx-2),Math.floor(dyTop),4,grow); g.fillStyle=C.slimeHi; g.fillRect(Math.floor(dx-1),Math.floor(dyTop),2,2); }
+    else if(d.phase==='drop'){ if(SPR.drip)g.drawImage(SPR.drip,Math.floor(dx-6),Math.floor(d.dropY-cam.y)); }
+    else { g.fillStyle=C.slimeDk; g.fillRect(Math.floor(dx-1),Math.floor(dyTop),2,3); }
+  });
+  // burst pipes
+  world.bursts.forEach(function(b){
+    var dx=b.x-cam.x, dy=b.y-cam.y;
+    // pipe body
+    g.fillStyle=b.patched?C.steel:C.rust; g.fillRect(Math.floor(dx)+4,Math.floor(dy)+8,TILE-8,TILE-16);
+    g.fillStyle=C.steelDk; g.fillRect(Math.floor(dx)+4,Math.floor(dy)+8,TILE-8,3);
+    if(b.patched){ g.fillStyle=C.steelHi; g.fillRect(Math.floor(dx)+8,Math.floor(dy)+12,TILE-16,4); }
+    if(!b.patched && b.spraying){
+      var sxp=dx+TILE*b.dir;
+      for(var i=0;i<8;i++){ var yy=dy+8+Math.random()*(TILE-16); var xx=sxp+ (b.dir>0?Math.random()*TILE*2:-(Math.random()*TILE*2)); g.fillStyle=i%2?C.foam:C.waterHi; g.fillRect(Math.floor(xx),Math.floor(yy),2+Math.random()*2,2); }
+    }
+  });
+  // crabs
+  world.crabs.forEach(function(cr){ if(!cr.alive)return; var dx=cr.x-cr.ext-cam.x, dy=cr.y-cam.y; if(SPR.crab)g.drawImage(SPR.crab,Math.floor(dx),Math.floor(dy)); });
+  // fans
+  world.fans.forEach(function(fn){ var dx=fn.x-cam.x, dy=fn.y-cam.y; g.save(); g.translate(Math.floor(dx),Math.floor(dy)); g.rotate(fn.spin); g.translate(-18,-18); if(SPR.fan)g.drawImage(SPR.fan,0,0); g.restore(); });
+  // barrels
+  world.barrels.forEach(function(ba){ var dx=ba.x-cam.x, dy=ba.y-cam.y; g.save(); g.translate(Math.floor(dx)+13,Math.floor(dy)+13); g.rotate(ba.spin); g.translate(-14,-14); if(SPR.barrel)g.drawImage(SPR.barrel,0,0); g.restore(); });
+  // flow platforms (barrel-platform)
+  world.flowPlats.forEach(function(fp){ var dx=fp.x-cam.x, dy=fp.y-cam.y; g.fillStyle=C.copperDk; g.fillRect(Math.floor(dx),Math.floor(dy),fp.w,fp.h); g.fillStyle=C.copper; g.fillRect(Math.floor(dx)+1,Math.floor(dy)+1,fp.w-2,4); g.fillStyle=C.copperHi; g.fillRect(Math.floor(dx)+2,Math.floor(dy)+1,fp.w-4,2); });
+  // checkpoints
+  world.checkpoints.forEach(function(c){ var dx=c.x-cam.x, dy=c.y-cam.y;
+    g.fillStyle=C.steelDk; g.fillRect(Math.floor(dx)+14,Math.floor(dy)+8,4,TILE-8);
+    // crank wheel
+    drawValveWheel(g,dx+16,dy+10,7, c.active?globalTime*3:0, c.active?C.slime:C.steel, c.active?C.slimeHi:C.steelHi);
+    if(c.flash>0){ g.globalAlpha=c.flash; g.fillStyle=C.slimeHi; g.fillRect(Math.floor(dx),Math.floor(dy)-4,TILE,4); g.globalAlpha=1; }
+  });
+  // valves
+  world.valves.forEach(function(v){ drawValve(g,v); });
+}
+
+function drawValve(g,v){
+  var dx=v.x-cam.x, dy=v.y-cam.y;
+  var col={drain:C.red, flow:C.blue, geyser:C.brass, master:C.gold}[v.kind];
+  var colHi={drain:C.heartHi, flow:'#8fb4ff', geyser:C.goldHi, master:C.goldHi}[v.kind];
+  // mount
+  g.fillStyle=C.steelDk; g.fillRect(Math.floor(dx)+8,Math.floor(dy)+8,TILE-16,TILE-8);
+  var r = v.kind==='master'?11:9;
+  drawValveWheel(g,dx+16,dy+ (v.kind==='master'?14:16), r, v.angle, col, colHi);
+  // drain countdown ring
+  if(v.kind==='drain' && v.turned){
+    var ds=world.drainState[ (function(){for(var i=0;i<world.drainState.length;i++){ if(world.valves[world.drainState[i].valveIdx]===v) return i;} return -1;})() ];
+    if(ds){
+      var frac=ds.timer/12;
+      g.strokeStyle= ds.timer<3?C.red:C.slimeHi; g.lineWidth=2;
+      g.beginPath(); g.arc(dx+16,dy+16,14,-Math.PI/2,-Math.PI/2+frac*Math.PI*2); g.stroke();
     }
   }
 }
 
-function drawParticles() {
-  for (var i = 0; i < MAX_PARTICLES; i++) {
-    var p = particlePool[i];
-    if (!p.active) continue;
-    var alpha = Math.max(0, p.life / p.maxLife);
-    ctx.globalAlpha = alpha;
-    ctx.fillStyle = p.color;
-    var sz = p.type === 'steam' ? p.size * (1.5 - alpha * 0.5) : p.size;
-    ctx.fillRect(Math.round(p.x - sz / 2), Math.round(p.y - sz / 2), sz, sz);
-  }
-  ctx.globalAlpha = 1;
+/* Player render with squash/stretch, i-frame flicker, facing flip */
+function drawPlayer(g){
+  var p=player;
+  if(p.iframe>0 && Math.floor(globalTime*20)%2===0 && STATE==='play') return; // flicker
+  var frame=pickMickFrame();
+  if(!frame) return;
+  var dx=p.x+p.w/2-16, dy=p.y+p.h-48;
+  // squash: scale
+  var sq=1, st=1;
+  if(p.squash>0){ var f=p.squash/PHYS.SQUASH; sq=1+0.25*f; st=1-0.25*f; }
+  g.save();
+  g.translate(Math.floor(dx)+16, Math.floor(dy)+48);
+  g.scale(p.facing>=0?1:-1, 1);
+  g.scale(sq,st);
+  g.translate(-16,-48);
+  g.drawImage(frame,0,0);
+  g.restore();
 }
 
-function getWaterTopY() {
-  var maxRise = GROUND_H_RANGE();
-  var frac = waterLevel / WATER_NOTCHES;
-  return GROUND_Y + 6 - frac * maxRise;
-}
-function GROUND_H_RANGE() { return 110; } // how far water can rise from floor line
-
-function drawWaterPlane() {
-  var topY = getWaterTopY();
-  if (topY > BASE_H) return;
-  ctx.save();
-  ctx.globalAlpha = 0.82;
-  ctx.fillStyle = PAL.water;
-  ctx.fillRect(-10, topY, BASE_W + 20, BASE_H - topY + 20);
-  ctx.globalAlpha = 1;
-  // ripples
-  var t = performance.now() / 500;
-  ctx.strokeStyle = PAL.waterLight;
-  ctx.lineWidth = 1;
-  for (var i = 0; i < 4; i++) {
-    var ry = topY + 4 + i * 6 + Math.sin(t + i) * 1.5;
-    ctx.beginPath();
-    for (var x = -10; x <= BASE_W + 10; x += 8) {
-      var yy = ry + Math.sin((x / 18) + t * 1.4 + i) * 1.2;
-      if (x === -10) ctx.moveTo(x, yy); else ctx.lineTo(x, yy);
-    }
-    ctx.stroke();
+function pickMickFrame(){
+  var p=player, f=p.animFrame;
+  switch(p.anim){
+    case 'idle': return f%2? MICK.idle1:MICK.idle0;
+    case 'walk': return [MICK.walk0,MICK.walk1,MICK.walk2,MICK.walk3][f%4];
+    case 'run': return [MICK.run0,MICK.run1,MICK.run2,MICK.run3][f%4];
+    case 'skid': return MICK.skid;
+    case 'jump': return MICK.jump;
+    case 'fall': return MICK.fall;
+    case 'duck': return MICK.duck;
+    case 'slide': return MICK.slide;
+    case 'whack': return [MICK.whack0,MICK.whack1,MICK.whack2][Math.min(2,f%3)];
+    case 'crank': return f%2? MICK.crank1:MICK.crank0;
+    case 'hurt': return MICK.hurt;
+    case 'victory': return MICK.victory;
   }
-  // foam line at top
-  ctx.fillStyle = PAL.waterFoam;
-  ctx.globalAlpha = 0.7;
-  for (var fx = -10; fx <= BASE_W + 10; fx += 6) {
-    var fy = topY + Math.sin(fx / 14 + t * 2) * 1.5;
-    ctx.fillRect(fx, fy, 3, 2);
-  }
-  ctx.globalAlpha = 1;
-  // floating debris
-  ctx.fillStyle = PAL.brickDark;
-  var debX = (performance.now() / 40) % (BASE_W + 40) - 20;
-  ctx.fillRect(BASE_W - debX, topY + 8, 10, 3);
-  ctx.restore();
+  return MICK.idle0;
 }
 
-function drawScanlines() {
-  ctx.save();
-  ctx.globalAlpha = 0.06;
-  ctx.fillStyle = '#000000';
-  for (var y = 0; y < BASE_H; y += 2) {
-    ctx.fillRect(-10, y, BASE_W + 20, 1);
-  }
-  ctx.restore();
+function drawParticles(g){
+  world.particles.forEach(function(pt){
+    var a=pt.life/pt.max; g.globalAlpha=Math.max(0,a);
+    g.fillStyle=pt.col;
+    var dx=Math.floor(pt.x-cam.x), dy=Math.floor(pt.y-cam.y);
+    if(pt.line){ g.fillRect(dx,dy,6,1); }
+    else g.fillRect(dx,dy,Math.ceil(pt.r),Math.ceil(pt.r));
+  });
+  g.globalAlpha=1;
+  world.floatText.forEach(function(f){
+    g.globalAlpha=Math.max(0,f.life/f.max); g.fillStyle=f.col; g.font='bold 10px "Courier New",monospace'; g.textAlign='center';
+    g.fillText(f.txt, Math.floor(f.x-cam.x), Math.floor(f.y-cam.y));
+  });
+  g.globalAlpha=1; g.textAlign='left';
 }
 
-function drawHUD() {
-  ctx.save();
-  ctx.textBaseline = 'top';
-  ctx.font = '10px "Courier New", monospace';
+/* Foreground pipe strips at 1.15x parallax */
+function drawForeground(g){
+  g.globalAlpha=0.9;
+  var fo=-(cam.x*1.15)%256;
+  for(var fx=fo-256;fx<BASE_W;fx+=256){
+    // top pipe strip
+    g.fillStyle=C.copperDk; g.fillRect(Math.floor(fx),0,90,10);
+    g.fillStyle=C.copper; g.fillRect(Math.floor(fx),2,90,5);
+    // bottom pipe strip
+    g.fillStyle=C.steelDk; g.fillRect(Math.floor(fx)+128,BASE_H-8,80,8);
+    g.fillStyle=C.pipeSteel; g.fillRect(Math.floor(fx)+128,BASE_H-7,80,3);
+  }
+  g.globalAlpha=1;
+}
+
+/* ---------------------------------------------------------------
+   22. HUD + SIGNS + MENUS
+   --------------------------------------------------------------- */
+function drawHUD(g){
+  // top bar panel
+  g.fillStyle='rgba(10,20,32,0.55)'; g.fillRect(0,0,BASE_W,20);
+  // hearts
+  for(var i=0;i<3;i++){
+    var hx=6+i*16, hy=4;
+    g.fillStyle= i<hud.hearts? C.heart : '#3a2530';
+    drawHeartIcon(g,hx,hy, i<hud.hearts?C.heartHi:'#5a3540');
+  }
+  // fittings
+  g.fillStyle=C.brass; g.font='bold 10px "Courier New",monospace'; g.textAlign='left';
+  if(SPR.fitting){ g.drawImage(SPR.fitting, 60,2,14,14); }
+  g.fillStyle=C.goldHi; g.fillText('x'+hud.fittings+'/'+world.fittingsTotal, 76, 13);
   // score
-  ctx.fillStyle = PAL.navy;
-  ctx.fillRect(4, 4, 96, 14);
-  ctx.fillStyle = PAL.cream;
-  ctx.fillText('SCORE ' + score, 8, 7);
+  g.fillStyle=C.ink; g.textAlign='right'; g.fillText('SCORE '+hud.score, BASE_W-56,13);
+  // speed gauge (P-meter)
+  var gx=BASE_W-52, gy=4, gw=48, gh=8;
+  g.fillStyle='#1a2636'; g.fillRect(gx,gy,gw,gh);
+  var spd=Math.min(1, Math.abs(player.vx)/PHYS.RUN_MAX);
+  var full=Math.abs(player.vx)>=PHYS.RUN_MAX-6;
+  g.fillStyle= full? C.gold : C.slime;
+  g.fillRect(gx+1,gy+1,Math.floor((gw-2)*spd),gh-2);
+  if(full && Math.floor(globalTime*8)%2===0){ g.fillStyle=C.goldHi; g.fillRect(gx+1,gy+1,gw-2,gh-2); }
+  g.fillStyle=C.ink; g.font='6px monospace'; g.fillText('SPD',gx+gw-16,gy+gh+7);
+  g.textAlign='left';
 
-  // FLOW meter
-  var flowW = 70;
-  ctx.fillStyle = PAL.navy;
-  ctx.fillRect(BASE_W - flowW - 8, 4, flowW + 4, 14);
-  ctx.fillStyle = PAL.cream;
-  ctx.fillText('FLOW x' + flow, BASE_W - flowW - 4, 7);
-  var barW = (flow / FLOW_CAP) * (flowW - 6);
-  ctx.fillStyle = flow >= FLOW_CAP ? PAL.spark : PAL.slime;
-  ctx.fillRect(BASE_W - flowW - 4, 15, Math.max(0, barW), 2);
+  // zone banner
+  world.banners.forEach(function(b){
+    if(b.timer>0){
+      var names=['STONE WORKS','STEEL MAINS','THE CISTERN'];
+      var a=Math.min(1,b.timer)*Math.min(1,(2.6-b.timer)*3);
+      g.globalAlpha=Math.min(1,a+0.2);
+      g.fillStyle='rgba(10,20,32,0.75)'; g.fillRect(0,BASE_H/2-24,BASE_W,48);
+      g.fillStyle=C.gold; g.font='bold 20px "Courier New",monospace'; g.textAlign='center';
+      g.fillText(names[b.n]||'ZONE', BASE_W/2, BASE_H/2+4);
+      g.fillStyle=C.ink; g.font='9px "Courier New",monospace';
+      g.fillText('ZONE '+(b.n+1), BASE_W/2, BASE_H/2-10);
+      g.globalAlpha=1; g.textAlign='left';
+    }
+  });
 
-  // Water gauge (top-center vertical-ish bar as horizontal for readability)
-  var gaugeW = 100, gaugeX = (BASE_W - gaugeW) / 2;
-  ctx.fillStyle = PAL.navy;
-  ctx.fillRect(gaugeX - 2, 4, gaugeW + 4, 12);
-  ctx.strokeStyle = PAL.cream;
-  ctx.strokeRect(gaugeX, 6, gaugeW, 8);
-  var fillW = (waterLevel / WATER_NOTCHES) * gaugeW;
-  ctx.fillStyle = waterLevel >= WATER_NOTCHES * 0.75 ? PAL.rust : PAL.water;
-  ctx.fillRect(gaugeX, 6, fillW, 8);
-  ctx.fillStyle = PAL.cream;
-  ctx.font = '7px "Courier New", monospace';
-  ctx.fillText('WATER', gaugeX + gaugeW / 2 - 14, 8);
-  ctx.restore();
-}
-
-function drawTitleScreen() {
-  ctx.save();
-  ctx.fillStyle = 'rgba(14,27,44,0.55)';
-  ctx.fillRect(-10, -10, BASE_W + 20, BASE_H + 20);
-
-  // Pixel logo (drawn via blocky text rects for chunky retro-arcade look)
-  ctx.textAlign = 'center';
-  ctx.textBaseline = 'middle';
-
-  ctx.font = 'bold 26px "Courier New", monospace';
-  ctx.fillStyle = PAL.copper;
-  ctx.fillText('MICK THE PLUMBER', BASE_W / 2 + 2, 62 + 2);
-  ctx.fillStyle = PAL.cream;
-  ctx.fillText('MICK THE PLUMBER', BASE_W / 2, 62);
-
-  ctx.font = 'bold 13px "Courier New", monospace';
-  ctx.fillStyle = PAL.slime;
-  ctx.fillText('- PIPE PANIC -', BASE_W / 2, 84);
-
-  // Mick preview, big
-  ctx.save();
-  ctx.translate(BASE_W / 2 - MICK_W * 2, 100);
-  ctx.scale(4, 4);
-  var bob = Math.sin(performance.now() / 250) * 1;
-  ctx.drawImage(SPR.mickRun[0], 0, bob, MICK_W, MICK_H);
-  ctx.restore();
-
-  var blink = Math.sin(performance.now() / 300) > -0.2;
-  if (blink) {
-    ctx.font = 'bold 14px "Courier New", monospace';
-    ctx.fillStyle = PAL.cream;
-    ctx.fillText('TAP / CLICK / PRESS TO START', BASE_W / 2, 176);
-  }
-
-  ctx.font = '9px "Courier New", monospace';
-  ctx.fillStyle = PAL.cream;
-  ctx.fillText('MOBILE: LEFT = JUMP    RIGHT = WHACK', BASE_W / 2, 192);
-  ctx.fillText('DESKTOP: SPACE/W = JUMP   J/ENTER = WHACK', BASE_W / 2, 203);
-
-  ctx.textAlign = 'left';
-  ctx.restore();
-}
-
-function drawWinScreen() {
-  ctx.save();
-  ctx.fillStyle = 'rgba(14,27,44,0.65)';
-  ctx.fillRect(-10, -10, BASE_W + 20, BASE_H + 20);
-
-  // confetti (tiny wrenches represented as small rotated rects with a hook)
-  for (var i = 0; i < confetti.length; i++) {
-    var c = confetti[i];
-    ctx.save();
-    ctx.translate(c.x, c.y);
-    ctx.rotate(c.rot);
-    ctx.fillStyle = c.color;
-    ctx.fillRect(-4, -1, 8, 2);
-    ctx.fillRect(-4, -3, 3, 6);
-    ctx.restore();
-  }
-
-  ctx.textAlign = 'center';
-  ctx.textBaseline = 'middle';
-  ctx.font = 'bold 22px "Courier New", monospace';
-  ctx.fillStyle = PAL.slime;
-  ctx.fillText('SHIFT COMPLETE', BASE_W / 2, 50);
-
-  // Mick wiping brow
-  ctx.save();
-  ctx.translate(BASE_W / 2 - MICK_W * 2, 66);
-  ctx.scale(4, 4);
-  ctx.drawImage(SPR.mickWhack[0], 0, 0, MICK_W, MICK_H);
-  ctx.restore();
-
-  var pct = totalPipes > 0 ? Math.round((patchedCount / totalPipes) * 100) : 100;
-  ctx.font = '12px "Courier New", monospace';
-  ctx.fillStyle = PAL.cream;
-  ctx.fillText('SCORE: ' + score, BASE_W / 2, 150);
-  ctx.fillText('PIPES PATCHED: ' + pct + '%', BASE_W / 2, 165);
-  ctx.fillText('MAX FLOW: x' + maxFlow, BASE_W / 2, 180);
-
-  ctx.font = 'bold 13px "Courier New", monospace';
-  ctx.fillStyle = PAL.cream;
-  ctx.fillText('TAP / CLICK / PRESS TO RESTART', BASE_W / 2, 200);
-
-  ctx.textAlign = 'left';
-  ctx.restore();
-}
-
-function drawLoseScreen() {
-  ctx.save();
-  ctx.fillStyle = 'rgba(14,27,44,' + (0.3 + loseSlowmo * 0.45) + ')';
-  ctx.fillRect(-10, -10, BASE_W + 20, BASE_H + 20);
-  ctx.fillStyle = PAL.water;
-  ctx.globalAlpha = 0.85;
-  ctx.fillRect(-10, -10, BASE_W + 20, BASE_H + 20);
-  ctx.globalAlpha = 1;
-
-  ctx.textAlign = 'center';
-  ctx.textBaseline = 'middle';
-  var wobble = Math.sin(performance.now() / 180) * 3 * (1 - loseSlowmo);
-  ctx.font = 'bold 30px "Courier New", monospace';
-  ctx.fillStyle = PAL.cream;
-  ctx.fillText('GLUG.', BASE_W / 2 + wobble, 90);
-
-  ctx.font = '12px "Courier New", monospace';
-  ctx.fillText('SCORE: ' + score, BASE_W / 2, 130);
-  ctx.fillText('MAX FLOW: x' + maxFlow, BASE_W / 2, 145);
-
-  if (loseSlowmo > 0.5) {
-    ctx.font = 'bold 13px "Courier New", monospace';
-    ctx.fillText('TAP / CLICK / PRESS TO RETRY', BASE_W / 2, 175);
-  }
-  ctx.textAlign = 'left';
-  ctx.restore();
-}
-
-// ---------- Restart handling on win/lose ----------
-function handleRestartGesture() {
-  if (state === STATE.WIN || state === STATE.LOSE) {
-    if (state === STATE.LOSE && loseSlowmo < 0.5) return; // avoid instant-skip
-    restartGame();
+  // idle objective arrow
+  if(idleTimer>5 && STATE==='play'){
+    var pulse=0.5+0.5*Math.sin(globalTime*4);
+    g.globalAlpha=0.4+0.4*pulse; g.fillStyle=C.gold;
+    var ax=BASE_W-40, ay=BASE_H/2;
+    g.beginPath(); g.moveTo(ax,ay-8); g.lineTo(ax+14,ay); g.lineTo(ax,ay+8); g.closePath(); g.fill();
+    g.font='8px monospace'; g.textAlign='center'; g.fillText('THIS WAY',ax+2,ay+22); g.globalAlpha=1; g.textAlign='left';
   }
 }
-window.addEventListener('keydown', function (e) { handleRestartGesture(); });
-canvas.addEventListener('touchstart', function () { handleRestartGesture(); }, { passive: true });
-canvas.addEventListener('mousedown', function () { handleRestartGesture(); });
-
-function restartGame() {
-  try {
-    audio.pause();
-    audio.currentTime = 0;
-  } catch (e) {}
-  gestureHandled = false;
-  state = STATE.TITLE;
-  jumpPressed = false; whackPressed = false;
-  audioStarted = false;
-  particlePool.forEach(function (p) { p.active = false; });
-  resetRun();
+function drawHeartIcon(g,x,y,hi){
+  g.fillRect(x+1,y+1,3,3); g.fillRect(x+8,y+1,3,3);
+  g.fillRect(x,y+3,12,4); g.fillRect(x+1,y+7,10,2); g.fillRect(x+3,y+9,6,2); g.fillRect(x+5,y+11,2,1);
+  g.fillStyle=hi; g.fillRect(x+2,y+2,2,2);
 }
 
-// ---------- Main loop (delta-capped rAF) ----------
-function frame(now) {
-  if (!lastFrameTime) lastFrameTime = now;
-  var dt = (now - lastFrameTime) / 1000;
-  lastFrameTime = now;
-  if (dt > MAX_DT) dt = MAX_DT;
-  if (dt < 0) dt = 0;
-  update(dt);
+/* In-world teach signposts + valve prompts */
+function drawSigns(g){
+  if(STATE!=='play') return;
+  // teach signposts
+  var teachMsgs=[
+    'HOLD ⚡ (SHIFT) TO RUN',      // 0
+    'PRESS DOWN TO DUCK',              // 1
+    'JUMP: SPACE / W — HOLD HIGHER',// 2
+    'DRAIN VALVE: STAND CLOSE, HOLD ⚡ (J)', // 3
+    'DOWN WHILE RUNNING = SLIDE',      // 4 (zone2)
+    'FLOW VALVE: FILLS A BASIN — RIDE THE PLATFORM UP', // 5
+    'GEYSER VALVE: OPENS A WATER JET — RIDE IT UP THE WALL' // 6
+  ];
+  world.teaches.forEach(function(t){
+    if(t.alpha<=0.02) return;
+    var dx=t.x-cam.x+16, dy=t.y-cam.y;
+    // post
+    g.globalAlpha=t.alpha;
+    g.fillStyle=C.boot; g.fillRect(Math.floor(dx)-2,Math.floor(dy)+6,4,TILE);
+    g.fillStyle='#d9c9a0'; g.fillRect(Math.floor(dx)-22,Math.floor(dy)-6,44,16);
+    g.fillStyle=C.bootHi; g.fillRect(Math.floor(dx)-22,Math.floor(dy)-6,44,2);
+    // text bubble above
+    var msg=teachMsgs[t.n]||'';
+    var bw=g.measureText? Math.max(80, msg.length*5.4):120;
+    g.font='8px "Courier New",monospace'; g.textAlign='center';
+    var bx=Math.floor(dx), by=Math.floor(dy)-40;
+    g.fillStyle='rgba(10,20,32,0.9)'; g.fillRect(bx-bw/2-4,by-10,bw+8,18);
+    g.strokeStyle=C.gold; g.lineWidth=1; g.strokeRect(bx-bw/2-4,by-10,bw+8,18);
+    g.fillStyle=C.ink; g.fillText(msg,bx,by+2);
+    g.globalAlpha=1; g.textAlign='left';
+  });
+  // valve floating prompt
+  if(world.nearValve){
+    var v=world.nearValve;
+    var labels={drain:'DRAIN VALVE',flow:'FLOW VALVE',geyser:'GEYSER VALVE',master:'MASTER VALVE'};
+    var dx=v.x-cam.x+16, dy=v.y-cam.y-14;
+    var txt=labels[v.kind]+': HOLD ⚡ (J)';
+    if(v.turned && v.kind!=='master') txt=labels[v.kind]+' ✓';
+    g.font='8px "Courier New",monospace'; g.textAlign='center';
+    var bw=Math.max(90, txt.length*5.2);
+    var bob=Math.sin(globalTime*4)*2;
+    g.fillStyle='rgba(10,20,32,0.9)'; g.fillRect(Math.floor(dx)-bw/2-4,Math.floor(dy+bob)-9,bw+8,16);
+    g.strokeStyle= v.turned?C.slime:C.gold; g.strokeRect(Math.floor(dx)-bw/2-4,Math.floor(dy+bob)-9,bw+8,16);
+    g.fillStyle=C.ink; g.fillText(txt, Math.floor(dx), Math.floor(dy+bob)+2);
+    // hold progress
+    if(v.turning && !v.turned){ var frac=Math.min(1,(v.kind==='master'?world.winCrankHold/2.7:v.hold/0.6)); g.fillStyle=C.gold; g.fillRect(Math.floor(dx)-bw/2-4,Math.floor(dy+bob)+7,(bw+8)*frac,2); }
+    g.textAlign='left';
+  }
+}
+
+function drawTitle(g){
+  var g2=g;
+  // decorative bricks
+  g2.fillStyle=C.bg1; for(var y=0;y<BASE_H;y+=8){ for(var x=(y%16?8:0);x<BASE_W;x+=16){ g2.fillStyle= (x+y)%3? C.bg1:C.bg2; g2.fillRect(x,y,15,7); } }
+  // title
+  g2.textAlign='center';
+  var t=Math.sin(globalTime*2)*2;
+  g2.fillStyle=C.inkDk; g2.font='bold 30px "Courier New",monospace'; g2.fillText('MICK THE PLUMBER',BASE_W/2+2,80+2+t);
+  g2.fillStyle=C.gold; g2.fillText('MICK THE PLUMBER',BASE_W/2,80+t);
+  g2.fillStyle=C.water; g2.font='bold 18px "Courier New",monospace'; g2.fillText('~ PIPE PANIC ~',BASE_W/2,108+t);
+  // Mick sprite big
+  if(MICK.idle0){ g2.save(); g2.translate(BASE_W/2-32,120); g2.scale(1.4,1.4); g2.drawImage(MICK.idle0,0,0); g2.restore(); }
+  // prompt
+  var blink=Math.floor(globalTime*2)%2;
+  g2.fillStyle= blink?C.ink:C.gold; g2.font='bold 12px "Courier New",monospace';
+  g2.fillText('PRESS ENTER / TAP TO START', BASE_W/2, 210);
+  g2.fillStyle=C.ink; g2.font='8px "Courier New",monospace';
+  g2.fillText('A SodClaw Foundry Game', BASE_W/2, 232);
+  g2.textAlign='left';
+}
+
+function drawHowTo(g){
+  g.fillStyle='rgba(8,16,26,0.96)'; g.fillRect(0,0,BASE_W,BASE_H);
+  g.textAlign='center';
+  g.fillStyle=C.gold; g.font='bold 16px "Courier New",monospace'; g.fillText('HOW TO PLAY',BASE_W/2,24);
+  g.textAlign='left'; g.font='9px "Courier New",monospace'; g.fillStyle=C.ink;
+  var lines=[
+    'OBJECTIVE:',
+    'Reach the MASTER VALVE at the end of the sewer.',
+    'Use your wrench on VALVES to move water out of your way.',
+    '',
+    'KEYBOARD:',
+    '  ← → / A D .... move        SHIFT ......... run (hold)',
+    '  SPACE / W .... jump       DOWN / S ...... duck / slide',
+    '  J ............ wrench     P pause   M mute',
+    '',
+    'TOUCH:',
+    '  Left pad ◀ ▶ ▼ move + duck',
+    '  JUMP button (big)      ⚡ wrench (hold+move = RUN)',
+    '',
+    'TIPS: Hold jump to go higher. Skid to turn fast.',
+    'Stomp or whack enemies. Grab brass fittings for score.'
+  ];
+  var yy=44;
+  for(var i=0;i<lines.length;i++){
+    if(lines[i].indexOf(':')>=0 && lines[i].length<14){ g.fillStyle=C.slimeHi; } else { g.fillStyle=C.ink; }
+    g.fillText(lines[i], 40, yy); yy+=13;
+  }
+  g.textAlign='center'; g.fillStyle= Math.floor(globalTime*2)%2?C.gold:C.ink; g.font='bold 11px "Courier New",monospace';
+  g.fillText('PRESS ENTER / TAP TO PLAY', BASE_W/2, BASE_H-14);
+  g.textAlign='left';
+}
+
+function drawPause(g){
+  g.fillStyle='rgba(8,16,26,0.85)'; g.fillRect(0,0,BASE_W,BASE_H);
+  g.textAlign='center'; g.fillStyle=C.gold; g.font='bold 20px "Courier New",monospace';
+  g.fillText('PAUSED',BASE_W/2,50);
+  g.fillStyle=C.ink; g.font='9px "Courier New",monospace';
+  var recap=[
+    'CONTROLS RECAP:',
+    '←→ move  SHIFT run  SPACE jump  DOWN duck/slide  J wrench',
+    'Reach the MASTER VALVE. Wrench the valves to clear water.',
+    '','[ P / ▶ ] RESUME    [ R ] RESTART    [ M ] MUTE'
+  ];
+  var yy=90; for(var i=0;i<recap.length;i++){ g.fillText(recap[i],BASE_W/2,yy); yy+=16; }
+  g.textAlign='left';
+}
+
+function drawWin(g){
+  player.winTimer += 0; // updated in loop
+  g.fillStyle='rgba(8,16,26,0.6)'; g.fillRect(0,0,BASE_W,BASE_H);
+  // wall of water rising behind glass
+  var floodH = Math.min(BASE_H, world.winFlood*BASE_H);
+  g.fillStyle='rgba(46,134,171,0.55)'; g.fillRect(0,BASE_H-floodH,BASE_W,floodH);
+  g.fillStyle=C.waterHi; g.fillRect(0,BASE_H-floodH,BASE_W,3);
+  for(var i=0;i<BASE_W;i+=10){ g.fillStyle=C.foam; g.fillRect(i,BASE_H-floodH+Math.sin(globalTime*4+i)*2,4,2); }
+  // stamp
+  g.textAlign='center';
+  var pop=Math.min(1,player.winTimer*2);
+  g.save(); g.translate(BASE_W/2,70); g.scale(pop,pop);
+  g.strokeStyle=C.gold; g.lineWidth=3; g.strokeRect(-140,-24,280,48);
+  g.fillStyle=C.gold; g.font='bold 26px "Courier New",monospace'; g.fillText('SHIFT COMPLETE',0,10);
+  g.restore();
+  if(player.winTimer>0.8){
+    g.fillStyle=C.ink; g.font='11px "Courier New",monospace';
+    var ts=Math.floor(stats.timeSec||0);
+    var lines=[
+      'FITTINGS: '+stats.fittings+' / '+world.fittingsTotal,
+      'ENEMIES CLEARED: '+stats.kills,
+      'PIPES PATCHED: '+stats.patches,
+      'TIME: '+Math.floor(ts/60)+':'+('0'+(ts%60)).slice(-2),
+      'HEARTS BONUS + TIME BONUS: '+stats.bonus,
+      '',
+      'FINAL SCORE: '+hud.score
+    ];
+    var yy=110; for(var i=0;i<lines.length;i++){ g.fillStyle= i===6?C.gold:C.ink; g.font= i===6?'bold 14px "Courier New",monospace':'11px "Courier New",monospace'; g.fillText(lines[i],BASE_W/2,yy); yy+=17; }
+    g.fillStyle= Math.floor(globalTime*2)%2?C.gold:C.ink; g.font='bold 11px "Courier New",monospace';
+    g.fillText('PRESS ENTER / TAP TO PLAY AGAIN', BASE_W/2, BASE_H-12);
+  }
+  g.textAlign='left';
+}
+
+/* ---------------------------------------------------------------
+   23. STATE MACHINE / MENU HANDLING
+   --------------------------------------------------------------- */
+function handleMenuKey(k){
+  if(k==='enter'||k===' '||k==='spacebar'){
+    if(STATE==='title'){ STATE='howto'; }
+    else if(STATE==='howto'){ startGame(); }
+    else if(STATE==='win'){ startGame(); }
+  }
+  if(STATE==='paused' && k==='r'){ startGame(); }
+  if(STATE==='play' && k==='r'){ /* soft restart via pause only */ }
+}
+function onFirstGesture(){
+  Audio2.init();
+  if(Audio2.ctx && Audio2.ctx.state==='suspended') Audio2.ctx.resume();
+  Audio2.startMusic();
+}
+function advanceOnTap(){
+  if(STATE==='title'){ STATE='howto'; }
+  else if(STATE==='howto'){ startGame(); }
+  else if(STATE==='win'){ startGame(); }
+}
+function startGame(){
+  initWorld();
+  STATE='play';
+  idleTimer=0;
+  onFirstGesture();
+}
+function togglePause(){
+  if(STATE==='play'){ STATE='paused'; }
+  else if(STATE==='paused'){ STATE='play'; }
+}
+function toggleMute(){
+  Audio2.muted=!Audio2.muted;
+  Audio2.setMuted(Audio2.muted);
+  var mb=document.getElementById('muteBtn'); if(mb) mb.innerHTML= Audio2.muted?'&#128263;':'&#128266;';
+}
+
+/* ---------------------------------------------------------------
+   24. MAIN LOOP
+   --------------------------------------------------------------- */
+var lastT=0;
+function frame(ts){
+  var dt=(ts-lastT)/1000; lastT=ts;
+  if(!isFinite(dt)||dt<0) dt=0;
+  if(dt>DT_CAP) dt=DT_CAP; // cap
+  globalTime+=dt;
+  Audio2.updateMusic();
+
+  if(STATE==='play'){
+    updateWhack(dt);
+    updateValves(dt);
+    updateWaterSystems(dt);
+    updatePlayer(dt);
+    updateEnemies(dt);
+    updateCheckpoints(dt);
+    updateParticles(dt);
+    updateCamera(dt);
+  } else if(STATE==='win'){
+    player.winTimer+=dt;
+    world.winFlood=Math.min(1, world.winFlood+dt*0.4);
+    updateParticles(dt);
+  } else if(STATE==='paused'){
+    // frozen
+  }
+  render();
   requestAnimationFrame(frame);
 }
 
-resetRun();
-requestAnimationFrame(frame);
+/* ---------------------------------------------------------------
+   25. UTIL
+   --------------------------------------------------------------- */
+function clamp(v,a,b){ return v<a?a:(v>b?b:v); }
+function lerp(a,b,t){ return a+(b-a)*t; }
 
-// initial render so title screen shows before first tick
-renderFrame(0);
+/* ---------------------------------------------------------------
+   26. BUILD ALL ART
+   --------------------------------------------------------------- */
+function buildArt(){
+  buildStoneTile('stone', C.stone, C.stoneHi, C.stoneLo, {seed:11});
+  buildStoneTile('stoneCrack', C.stone, C.stoneHi, C.stoneLo, {seed:23, crack:true});
+  buildStoneTile('stoneMoss', C.stone, C.stoneHi, C.stoneLo, {seed:31, moss:true});
+  buildStoneTile('stoneWet', C.stone, C.stoneHi, C.stoneLo, {seed:41, wet:true});
+  buildSteelTile('steel', C.steel, C.steelHi, C.steelLo, {seed:5});
+  buildSteelTile('steelRust', C.steel, C.steelHi, C.steelLo, {seed:9, rust:true});
+  buildSteelTile('steelVent', C.steel, C.steelHi, C.steelLo, {seed:13, vent:true});
+  buildGrateTile();
+  buildCrumbleTile();
+  buildPipeTiles();
+  buildBgArch();
+  buildChain();
+  buildLamp();
+  buildMick();
+  buildSprites();
+}
+
+/* ---------------------------------------------------------------
+   27. BOOT
+   --------------------------------------------------------------- */
+function boot(){
+  initCanvas();
+  buildArt();
+  bindKeys();
+  buildTouch();
+  // click/tap on canvas advances menus + first gesture
+  var wrap=document.getElementById('wrap');
+  wrap.addEventListener('pointerdown', function(){ Input.anyGesture=true; onFirstGesture(); if(STATE==='title'||STATE==='howto'||STATE==='win') advanceOnTap(); });
+  document.getElementById('pauseBtn').addEventListener('click', function(e){ e.stopPropagation(); togglePause(); });
+  document.getElementById('muteBtn').addEventListener('click', function(e){ e.stopPropagation(); toggleMute(); });
+  // init world once for title-screen Mick preview & so world exists
+  initWorld();
+  STATE='title';
+  requestAnimationFrame(frame);
+}
+
+// Expose internals for headless tests
+GAME.parseLevel=parseLevel;
+GAME.LEVEL_ROWS_FN=buildLevelRows;
+GAME.PHYS=PHYS;
+GAME.KNOWN_CHARS=KNOWN_CHARS;
+GAME.makeSimPlayer=makePlayer;
+GAME.simConstants={TILE:TILE, DT_CAP:DT_CAP, SUBSTEP_SPEED:SUBSTEP_SPEED};
+if(typeof window!=='undefined'){ window.MICK_GAME=GAME; window.addEventListener('DOMContentLoaded', boot); }
+if(typeof module!=='undefined'){ module.exports=GAME; }
 
 })();
 </script>
