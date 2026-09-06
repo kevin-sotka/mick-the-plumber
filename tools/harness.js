@@ -223,11 +223,18 @@ const SCEN = {
 
   /* THE ADVERSARIAL SCENARIO (gate 8): hold right, hold jump, WITH keydown auto-repeat,
      for a long run, and fail on a measurable stall — not on a human looking at a picture.
-     This game's forgiveness layer isn't jump-only: progress is gated by valves that need
-     the wrench held for 0.6s while standing in their zone (see updateValves()), so a stick
-     test that only holds right+jump will report a false "stuck" at the first drain pit —
-     it hasn't tried the button that opens it. Hold wrench continuously too, the way a
-     real "mash every button" playtester would. */
+     This game's forgiveness layer isn't jump-only:
+       - progress is gated by valves that need the wrench held for 0.6s while standing in
+         their zone (see updateValves()) — hold wrench continuously, the way a real
+         "mash every button" playtester would.
+       - one obstacle (the low pipe in Zone 1) needs DOWN tapped, held only briefly. Ducking
+         (not sliding) applies zero horizontal acceleration — only friction — so holding
+         DOWN indefinitely coasts to a dead stop and stays there for good, held or not, a
+         self-inflicted deadlock that looks exactly like a level bug but is a scripting one.
+         A brief, periodic down-tap avoids that trap while still catching duck-gated content.
+     Known false-positive: an enemy standing right at the pipe's exit can tag the player
+     mid-slide; that reads as a stall here but is normal difficulty a human clears by timing
+     the stomp/whack, not a structural defect — see tools/harness.js history / session notes. */
   adversarial(){
     api.startGame(); step(30);
     hold('ArrowRight'); hold('j');
@@ -235,14 +242,9 @@ const SCEN = {
     const seen = {};
     for (let i = 0; i < 9000; i++){
       if (api.state !== 'play'){ step(1); lastX = api.player.x; stalled = 0; continue; }
-      if (i % 90 < 4) hold('Space'); else release('Space');   // periodic jump to clear obstacles
-      // whack is an edge-triggered tap, not a hold — holding 'j' the whole run (needed for
-      // valves, which want a continuous 0.6s press) only lands one whack, ever. A stalled
-      // player mashes: re-tap wrench and try ducking, the way a confused human would.
-      if (stalled > 20 && stalled % 20 === 0){ release('j'); }
-      if (stalled > 20 && stalled % 20 === 5){ hold('j'); }
-      if (stalled > 40) hold('ArrowDown'); else release('ArrowDown');
-      if (i % 2 === 0) repeatHeld();                            /* <- the line that finds the bugs */
+      if (i % 90 < 4) hold(' '); else release(' ');       // periodic jump to clear obstacles
+      if (i % 40 < 6) hold('ArrowDown'); else release('ArrowDown');   // periodic brief duck/slide
+      if (i % 2 === 0) repeatHeld();                       /* <- the line that finds the bugs */
       step(1); played++;
       const P = api.player;
       seen[P.anim] = (seen[P.anim] || 0) + 1;
@@ -263,23 +265,50 @@ const SCEN = {
     save('99_adversarial.png');
   },
 
+  jumpRange(){
+    api.startGame(); step(20);
+    hold('ArrowRight'); hold('Shift');
+    for (let i = 0; i < 40; i++){ if (i%2===0) repeatHeld(); step(1); }
+    console.log('pre-jump', JSON.stringify({x:Math.round(api.player.x), vx:Math.round(api.player.vx)}));
+    hold(' ');
+    let jumped = false, leftGroundX = null, landedX = null;
+    for (let i = 0; i < 200; i++){
+      if (i === 20) release(' ');   // hold well past apex for the tallest/longest arc
+      if (i%2===0) repeatHeld();
+      const wasGrounded = api.player.grounded;
+      step(1);
+      const P = api.player;
+      if (wasGrounded && !P.grounded && leftGroundX===null) leftGroundX = P.x;
+      if (leftGroundX!==null && P.grounded && landedX===null && P.x>leftGroundX+5){ landedX = P.x; break; }
+    }
+    console.log('run-jump: left ground at x='+Math.round(leftGroundX)+', landed at x='+Math.round(landedX)+', range='+Math.round(landedX-leftGroundX)+'px ('+((landedX-leftGroundX)/32).toFixed(2)+' tiles)');
+  },
+
   /* Map-topology audit: no game mechanic (drain/flow/geyser valve) removes a solid stone or
-     steel tile — valves only open water. So any column that is 100% solid across every
-     interior row (i.e. floor to ceiling) is a genuine, permanent dead end, independent of
-     input. This is how the "zone segments authored as sealed boxes" bug was found: hold
-     right + wrench (adversarial) got a real player stuck at world x=460 with no valve
-     nearby, and this scenario pinpoints exactly which column and confirms it algebraically
-     rather than by eyeballing a screenshot. */
+     steel tile — valves only open water. So any column with no genuinely passable opening in
+     its playable band (rows 1..h-6) is a permanent dead end, independent of input.
+     "Passable" means at least 2 contiguous open rows (64px — comfortably fits the 28px duck
+     hitbox with margin), not just "not literally every row." A single accidental 1-row gap
+     is what actually shipped at the z1b/z1c seam: the level's hand-typed ASCII rows weren't
+     all the same length, so a short row got right-padded with an extra space by seg(), and
+     that lone padding space became the only non-solid cell in an otherwise solid column —
+     open by the letter of "not fully solid," but no real player can fit a slide through a
+     single row aligned exactly on the tile grid. This is how the "zone segments authored as
+     sealed boxes" bug was found in the first place: hold right + wrench (adversarial) got a
+     real player stuck at world x=460 with no valve nearby; after that fix, the exact same
+     technique (a clean, chaos-free run) found a second player stuck dead at world x=1132,
+     which is this seam. Require a real gap, not a technicality. */
   connectivity(){
     const rows = api.LEVEL_ROWS_FN();
     const parsed = api.parseLevel(rows);
+    const MIN_GAP = 2; // contiguous open rows needed for a genuinely passable opening
     const solidCols = [];
     for (let x = 0; x < parsed.w; x++){
-      let allSolid = true;
+      let bestRun = 0, run = 0;
       for (let y = 1; y < parsed.h - 5; y++){   // skip the universal ceiling row and the floor/basement rows
-        if (!parsed.grid[y][x]) { allSolid = false; break; }
+        if (!parsed.grid[y][x]) { run++; bestRun = Math.max(bestRun, run); } else { run = 0; }
       }
-      if (allSolid) solidCols.push(x);
+      if (bestRun < MIN_GAP) solidCols.push(x);
     }
     // collapse consecutive columns into ranges for a readable report
     const ranges = [];
@@ -288,9 +317,10 @@ const SCEN = {
       if (last && x === last[1]+1) last[1] = x; else ranges.push([x,x]);
     }
     // Two ranges are expected, not bugs: column 0 is the world's left edge (there's nothing
-    // to walk in from), and the tail is z3end — the wall behind the Master Valve, sealed
-    // until the ending's flood-through cutscene. Everything else must be open.
-    const EXPECTED = [[0,0],[parsed.w-8,parsed.w-1]];
+    // to walk in from), and the tail is the sealed room around the Master Valve (reachable
+    // and interactable at its own tile, verified separately) plus z3end — walled off until
+    // the ending's flood-through cutscene. Everything else must be open.
+    const EXPECTED = [[0,0],[parsed.w-9,parsed.w-1]];
     const unexpected = ranges.filter(r => !EXPECTED.some(e => e[0]===r[0] && e[1]===r[1]));
     console.log('  full floor-to-ceiling solid columns: ' +
       (ranges.length ? ranges.map(r=>r[0]===r[1]?''+r[0]:r[0]+'-'+r[1]).join(', ') : 'none') +
