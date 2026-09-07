@@ -1069,9 +1069,9 @@ function buildLevelRows(){
     "#        ###       #",
     "#     *            #",
     "#                  #",
-    "#    * H            #",
-    "               g     ",   // gunk blob
-    "           --        ",   // low pipe overhang (duck) — deco solid
+    "#    * H           #",
+    "               g    ",   // gunk blob
+    "           --       ",   // low pipe overhang (duck) — deco solid
     "                    ",
     "####################",
     "####################",
@@ -1091,8 +1091,8 @@ function buildLevelRows(){
     "#     *          #",
     "#  ###     *   * #",
     "              g   ",
-    " ox            oo ",
-    " oo    H       oo ",
+    "               oo ",
+    "       H       oo ",
     "##################",
     "##################",
     "wwwwwwwwwwwwwwwwww",
@@ -1109,10 +1109,10 @@ function buildLevelRows(){
     "#                    #",
     "#  R          *      #",   // drain valve on ledge left
     "#  #                 #",
-    "#  #     *    *       #",
-    "   #                  #",
-    "   #11111111111111   #",   // drainable water region (top)
-    "   #11111111111111   #",   // deeper
+    "#  #     *    *      #",
+    "   #                  ",
+    "   #11111111111111    ",   // drainable water region (top)
+    "   #11111111111111    ",   // deeper
     "####111111111111######",   // pit floor is water; drain reveals floor
     "####111111111111######",
     "wwww111111111111wwwwww",
@@ -1168,12 +1168,12 @@ function buildLevelRows(){
     "=       *          =",
     "=  p           a   =",   // burst pipe (left, sprays right), crab in pipe end (right)
     "=  =               =",
-    "=  =   *    ===     =",
-    "=  =           *    =",
-    "=  =====            =",
-    "           g        =",
-    " r      *        rr =",
-    " rr             rrr =",
+    "=  =   *    ===    =",
+    "=  =           *   =",
+    "=  =====           =",
+    "           g        ",
+    " r      *        rr ",
+    " rr             rrr ",
     "====================",
     "====================",
     "WWWWWWWWWWWWWWWWWWWW",
@@ -1206,14 +1206,14 @@ function buildLevelRows(){
     "=L                L=",
     "=                  =",
     "=      b           =",   // barrel spawner (rolls left→player? we'll roll toward player)
-    "=      =            =",
-    "=  *   ==           =",
-    "=      ===   *      =",
-    "=  C  C  C  C   *   =",   // crumble grates over water
-    "=                   =",
-    "  a          g      =",   // crab + blob
-    " ..................=",   // water below (lethal)
-    " ..................=",
+    "=      =           =",
+    "=  *   ==          =",
+    "=      ===   *     =",
+    "=  C  C  C  C   *  =",   // crumble grates over water
+    "=                  =",
+    "  a          g      ",   // crab + blob
+    " .................. ",   // water below (lethal)
+    " .................. ",
     "=WW................=",
     "====================",
     "WWWWWWWWWWWWWWWWWWWW",
@@ -1304,7 +1304,7 @@ function buildLevelRows(){
   // final gauntlet + MASTER valve
   var z3c = seg([
     "wwwwwwwwwwwwwwwwwwww",
-    "wL                w",
+    "wL                 w",
     "w                  w",
     "w      ***         w",
     "w    =====         w",
@@ -1317,9 +1317,9 @@ function buildLevelRows(){
     "               ==  w",
     "wDDDDDD===DDDDD====w",
     "wwwwwwwwwwwwwwwwwwww",
-    "..................w",
-    "..................w",
-    ".................ww"
+    "...................w",
+    "...................w",
+    "..................ww"
   ]);
   // end cap
   var z3end = seg([
@@ -2793,7 +2793,10 @@ function drawPlayer(g){
   if(p.iframe>0 && Math.floor(globalTime*20)%2===0 && STATE==='play') return; // flicker
   var frame=pickMickFrame();
   if(!frame) return;
-  var dx=p.x-cam.x+p.w/2-16, dy=p.y-cam.y+p.h-48;
+  // The 32x48 sprite canvas has ~4px of blank padding below Mick's boots (the hand-drawn
+  // pixel art is a 16x24 grid scaled 2x, and the boots end 2 grid-rows above the canvas
+  // bottom in most frames) — without the +4 that padding reads as floating above the floor.
+  var dx=p.x-cam.x+p.w/2-16, dy=p.y-cam.y+p.h-48+4;
   // squash: scale
   var sq=1, st=1;
   if(p.squash>0){ var f=p.squash/PHYS.SQUASH; sq=1+0.25*f; st=1-0.25*f; }

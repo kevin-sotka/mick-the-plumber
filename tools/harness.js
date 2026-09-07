@@ -165,6 +165,34 @@ function playerScreenPos(){
 const SCEN = {
   title(){ step(60); save('01_title.png'); },
 
+  /* Careful, screenshot-heavy walkthrough for manually diagnosing a reported stuck point.
+     Bunny-hops continuously (jump the instant it's grounded, held long enough for a real
+     rise) so it never misses an obstacle that needed a jump, and pulses duck briefly and
+     periodically (never held indefinitely — see the adversarial comment above for why an
+     indefinite hold is a self-inflicted dead end, not a game bug). Screenshots on every
+     stall and periodically regardless, named by frame number for later inspection. */
+  walkthrough(){
+    api.startGame(); step(20);
+    hold('ArrowRight'); hold('Shift'); hold('j');
+    let lastX = api.player.x, stalled = 0, jumpUntil = 0, wasGrounded = false;
+    for (let i = 0; i < 6000; i++){
+      const P = api.player;
+      if (P.grounded && !wasGrounded) jumpUntil = i + 18;   // just landed: queue a fresh hop
+      wasGrounded = P.grounded;
+      if (i < jumpUntil) hold(' '); else release(' ');
+      if (stalled > 20 && stalled % 30 < 6) hold('ArrowDown'); else release('ArrowDown');
+      if (i % 2 === 0) repeatHeld();
+      step(1);
+      if (P.x - lastX < 0.35) stalled++; else stalled = 0;
+      lastX = Math.max(lastX, P.x);
+      if (i % 60 === 0 || stalled === 90){
+        console.log(i, JSON.stringify({x:Math.round(P.x), y:Math.round(P.y), grounded:P.grounded, anim:P.anim, stalled}));
+        save('wt_'+String(i).padStart(4,'0')+'.png');
+      }
+      if (stalled > 400) { console.log('  giving up, stalled 400 frames at x='+Math.round(P.x)); break; }
+    }
+  },
+
   howto(){ step(30); api.advanceOnTap(); step(10); save('02_howto.png'); },
 
   /* Zone banners and teach signposts are auto-numbered by the level parser in the order it
@@ -282,6 +310,43 @@ const SCEN = {
       if (leftGroundX!==null && P.grounded && landedX===null && P.x>leftGroundX+5){ landedX = P.x; break; }
     }
     console.log('run-jump: left ground at x='+Math.round(leftGroundX)+', landed at x='+Math.round(landedX)+', range='+Math.round(landedX-leftGroundX)+'px ('+((landedX-leftGroundX)/32).toFixed(2)+' tiles)');
+  },
+
+  /* KNOWN OPEN ISSUE, not a regression test that should ever go green by accident: the
+     Zone 1 DRAIN VALVE room (z1d) places the valve, teach sign, and a fitting pickup at
+     row6 — floating 5 tiles (160px) above the small entry floor, directly on top of a
+     1-tile-wide pillar with no run-up (the entry floor is only 2 tiles deep). Reaching it
+     needs a near-pixel-perfect running jump straight onto a single 32px-wide landing from
+     almost a dead stop. This scenario measures the actual jump apex height achieved from
+     that exact entry floor and reports how it compares to the 160px needed — it is a
+     measurement, not a pass/fail assertion, because the fix here is a level-design call
+     (move the valve down, widen the pillar, add a step) that should go back to Kevin rather
+     than be silently redesigned. Re-run after any change to z1d or to jump physics. */
+  valveReach(){
+    const rows = api.LEVEL_ROWS_FN();
+    const parsed = api.parseLevel(rows);
+    const valve = parsed.entities.find(e => e.type === 'valve' && e.kind === 'drain');
+    if (!valve) { console.log('  no drain valve found — z1d layout changed, scenario needs updating'); return; }
+    console.log('  drain valve at tile ('+valve.tx+','+valve.ty+')  world px ('+(valve.tx*32)+','+(valve.ty*32)+')');
+    api.startGame(); step(20);
+    hold('ArrowRight'); hold('Shift');
+    for (let i = 0; i < 40; i++){ if (i%2===0) repeatHeld(); step(1); }
+    hold(' ');
+    let peakY = api.player.y;
+    for (let i = 0; i < 40; i++){
+      if (i === 20) release(' ');
+      if (i%2===0) repeatHeld();
+      step(1);
+      peakY = Math.min(peakY, api.player.y);
+    }
+    const floorY = 384; // standard row-12 floor used across zone 1
+    const apexHeightPx = floorY - peakY;
+    const neededPx = floorY - (valve.ty*32) - 32; // clear the pillar top, one tile below the valve
+    console.log('  max jump apex from a stand: ' + Math.round(apexHeightPx) + 'px above floor');
+    console.log('  height needed to reach the valve ledge: ~' + Math.round(neededPx) + 'px');
+    console.log('  ' + (apexHeightPx >= neededPx
+      ? 'height is technically reachable, but the landing is a single 32px-wide tile with ~0 run-up — flag for a human playtest, do not treat this as solved'
+      : 'UNREACHABLE by a standing jump — needs a design fix (lower the valve, add a step/ledge, or widen the landing)'));
   },
 
   /* Map-topology audit: no game mechanic (drain/flow/geyser valve) removes a solid stone or
