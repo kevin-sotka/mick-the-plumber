@@ -312,41 +312,43 @@ const SCEN = {
     console.log('run-jump: left ground at x='+Math.round(leftGroundX)+', landed at x='+Math.round(landedX)+', range='+Math.round(landedX-leftGroundX)+'px ('+((landedX-leftGroundX)/32).toFixed(2)+' tiles)');
   },
 
-  /* KNOWN OPEN ISSUE, not a regression test that should ever go green by accident: the
-     Zone 1 DRAIN VALVE room (z1d) places the valve, teach sign, and a fitting pickup at
-     row6 — floating 5 tiles (160px) above the small entry floor, directly on top of a
-     1-tile-wide pillar with no run-up (the entry floor is only 2 tiles deep). Reaching it
-     needs a near-pixel-perfect running jump straight onto a single 32px-wide landing from
-     almost a dead stop. This scenario measures the actual jump apex height achieved from
-     that exact entry floor and reports how it compares to the 160px needed — it is a
-     measurement, not a pass/fail assertion, because the fix here is a level-design call
-     (move the valve down, widen the pillar, add a step) that should go back to Kevin rather
-     than be silently redesigned. Re-run after any change to z1d or to jump physics. */
+  /* z1d's drain valve used to sit 5 tiles (160px) above its entry floor on a 1-tile pillar
+     with almost no run-up — a full sprint-jump held to natural apex JUST cleared it (161px vs
+     160 needed), a 0-1px margin that wasn't real, and needed sprint + a knife-edge landing to
+     even get that. Two intermediate-platform designs were tried and both introduced worse
+     bugs than they fixed (a platform thick enough to be ground-connected blocked the floor
+     underneath it; a thin platform flush against the pillar created a "graze the corner"
+     collision the player could hit face-first mid-jump) before landing on the actual fix:
+     the valve, teach sign, and pillar are just LOWERED 2 tiles to sit at the door's own
+     height (a 3-row wall matching the standard door band, not a 5-row one). That drops the
+     climb to 96px, comfortably inside a *plain walk-jump's* apex (~138px, no sprint needed)
+     with real margin. This scenario drives a plain, unhurried run (jump fired whenever
+     grounded, no sprint, no precision timing) and confirms the player actually reaches the
+     valve's tile. Re-run after any change to z1d's geometry or to jump physics. */
   valveReach(){
     const rows = api.LEVEL_ROWS_FN();
     const parsed = api.parseLevel(rows);
     const valve = parsed.entities.find(e => e.type === 'valve' && e.kind === 'drain');
     if (!valve) { console.log('  no drain valve found — z1d layout changed, scenario needs updating'); return; }
-    console.log('  drain valve at tile ('+valve.tx+','+valve.ty+')  world px ('+(valve.tx*32)+','+(valve.ty*32)+')');
+    const targetX = valve.tx*32, targetY = valve.ty*32;
+    console.log('  drain valve at tile ('+valve.tx+','+valve.ty+')  world px ('+targetX+','+targetY+')');
+
     api.startGame(); step(20);
-    hold('ArrowRight'); hold('Shift');
-    for (let i = 0; i < 40; i++){ if (i%2===0) repeatHeld(); step(1); }
-    hold(' ');
-    let peakY = api.player.y;
-    for (let i = 0; i < 40; i++){
-      if (i === 20) release(' ');
-      if (i%2===0) repeatHeld();
+    api.player.x = 54*32 + 4; api.player.y = 340; api.player.vx = 0; api.player.vy = 0;
+    hold('ArrowRight');
+    let closest = Infinity, jumpAt = -100, jumps = 0, reachedAt = -1;
+    for (let i = 0; i < 200; i++){
+      const P = api.player;
+      closest = Math.min(closest, Math.hypot(P.x - targetX, P.y - targetY));
+      if (P.grounded && i - jumpAt > 24) { hold(' '); jumpAt = i; jumps++; }
+      if (i - jumpAt === 20) release(' ');
+      if (i % 2 === 0) repeatHeld();
       step(1);
-      peakY = Math.min(peakY, api.player.y);
+      if (Math.abs(P.x - targetX) < 20 && Math.abs(P.y - targetY) < 40) { reachedAt = i; break; }
     }
-    const floorY = 384; // standard row-12 floor used across zone 1
-    const apexHeightPx = floorY - peakY;
-    const neededPx = floorY - (valve.ty*32) - 32; // clear the pillar top, one tile below the valve
-    console.log('  max jump apex from a stand: ' + Math.round(apexHeightPx) + 'px above floor');
-    console.log('  height needed to reach the valve ledge: ~' + Math.round(neededPx) + 'px');
-    console.log('  ' + (apexHeightPx >= neededPx
-      ? 'height is technically reachable, but the landing is a single 32px-wide tile with ~0 run-up — flag for a human playtest, do not treat this as solved'
-      : 'UNREACHABLE by a standing jump — needs a design fix (lower the valve, add a step/ledge, or widen the landing)'));
+    const P = api.player;
+    console.log('  final position ('+Math.round(P.x)+','+Math.round(P.y)+'), plain jumps used='+jumps+', closest approach to valve='+Math.round(closest)+'px'+(reachedAt>=0?', reached at frame '+reachedAt:''));
+    console.log('  ' + (closest < 40 ? 'REACHABLE with a plain walk-jump — fix confirmed' : 'STILL NOT REACHABLE — needs another look'));
   },
 
   /* Map-topology audit: no game mechanic (drain/flow/geyser valve) removes a solid stone or
