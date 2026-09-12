@@ -1131,8 +1131,8 @@ function buildLevelRows(){
     "#    K       #",   // checkpoint
     "#   ###      #",
     "         H    ",
-    " xx         o ",
-    " oo    *    o ",
+    "              ",
+    "       *      ",
     "##############",
     "##############",
     "wwwwwwwwwwwwww",
@@ -1172,8 +1172,8 @@ function buildLevelRows(){
     "=  =           *   =",
     "=  =====           =",
     "           g        ",
-    " r      *        rr ",
-    " rr             rrr ",
+    "        *           ",
+    "                    ",
     "====================",
     "====================",
     "WWWWWWWWWWWWWWWWWWWW",
@@ -1193,7 +1193,7 @@ function buildLevelRows(){
     "=   =        2222    =",
     "    =    H   2F22     ",   // F = flow platform start (bottom of basin)
     "    =========2222==== ",
-    " rr          2222   r ",
+    "             2222     ",
     "=====================D",
     "======================",
     "WWWWWWWWWWWWWWWWWWWWWW",
@@ -1231,9 +1231,9 @@ function buildLevelRows(){
     "=   K      =",   // checkpoint
     "=  ===     =",
     "=       H  =",
-    " rr      rr ",
-    " rr  *   rr ",
-    " rr      rr ",
+    "            ",
+    "     *      ",
+    "            ",
     "============",
     "============",
     "WWWWWWWWWWWW",
@@ -1497,6 +1497,7 @@ var Audio2 = {
     this.bgmEl = document.getElementById('bgm');
     if(this.bgmEl){
       this.bgmEl.volume = this.muted?0:0.55;
+      this.bgmEl.muted = this.muted; // iOS Safari ignores .volume entirely (locked to the hardware slider); .muted is the only thing that reliably silences it there
       var p=this.bgmEl.play();
       if(p&&p.catch) p.catch(function(){});
     }
@@ -1504,7 +1505,7 @@ var Audio2 = {
   setMuted:function(m){
     this.muted=m;
     if(this.master) this.master.gain.value = m?0:0.5;
-    if(this.bgmEl) this.bgmEl.volume = m?0:0.55;
+    if(this.bgmEl){ this.bgmEl.volume = m?0:0.55; this.bgmEl.muted = m; }
   },
   // soft fade at loop seam: fade out last 0.4s, fade in first 0.4s
   updateMusic:function(){
@@ -3177,6 +3178,12 @@ function boot(){
   // click/tap on canvas advances menus + first gesture
   var wrap=document.getElementById('wrap');
   wrap.addEventListener('pointerdown', function(){ Input.anyGesture=true; onFirstGesture(); if(STATE==='title'||STATE==='howto'||STATE==='win') advanceOnTap(); });
+  // pointerdown fires (and bubbles to wrap, above) before click does, so stopping
+  // propagation only on 'click' doesn't stop wrap's handler from also firing on every
+  // tap of these buttons — advancing the title/howto/win screen, or replaying the
+  // first-gesture audio unlock, as an unwanted side effect of pausing or muting.
+  document.getElementById('pauseBtn').addEventListener('pointerdown', function(e){ e.stopPropagation(); });
+  document.getElementById('muteBtn').addEventListener('pointerdown', function(e){ e.stopPropagation(); });
   document.getElementById('pauseBtn').addEventListener('click', function(e){ e.stopPropagation(); togglePause(); });
   document.getElementById('muteBtn').addEventListener('click', function(e){ e.stopPropagation(); toggleMute(); });
   // init world once for title-screen Mick preview & so world exists

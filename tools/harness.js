@@ -325,6 +325,33 @@ const SCEN = {
      with real margin. This scenario drives a plain, unhurried run (jump fired whenever
      grounded, no sprint, no precision timing) and confirms the player actually reaches the
      valve's tile. Re-run after any change to z1d's geometry or to jump physics. */
+  /* Quick measurement (not a redesign) of z2b's FLOW valve, which has the same shape as the
+     z1d DRAIN valve did before its fix: a valve sitting on top of a tall vertical pillar,
+     with a floor extension one tier below it. Bunny-hops toward the valve's tile and reports
+     the closest approach — flag-and-report only, this is not attempting a fix. */
+  flowValveReach(){
+    api.startGame(); step(20);
+    const rows = api.LEVEL_ROWS_FN();
+    const parsed = api.parseLevel(rows);
+    const valve = parsed.entities.find(e => e.type === 'valve' && e.kind === 'flow');
+    const targetX = valve.tx*32, targetY = valve.ty*32;
+    console.log('  flow valve at world px ('+targetX+','+targetY+')');
+    api.player.x = 120*32 + 20; api.player.y = 340; api.player.vx = 0; api.player.vy = 0; api.player.iframe = 3;
+    hold('ArrowRight');
+    let closest = Infinity, jumpAt = -100;
+    for (let i = 0; i < 400; i++){
+      const P = api.player;
+      closest = Math.min(closest, Math.hypot(P.x - targetX, P.y - targetY));
+      if (P.grounded && i - jumpAt > 24) { hold(' '); jumpAt = i; }
+      if (i - jumpAt === 20) release(' ');
+      if (i % 2 === 0) repeatHeld();
+      step(1);
+      if (Math.abs(P.x - targetX) < 20 && Math.abs(P.y - targetY) < 40) break;
+    }
+    console.log('  closest approach to flow valve: '+Math.round(closest)+'px, final pos ('+Math.round(api.player.x)+','+Math.round(api.player.y)+')');
+    console.log('  ' + (closest < 40 ? 'reachable with plain jumps' : 'NOT clearly reachable — needs a closer look, same pattern as the pre-fix z1d valve'));
+  },
+
   valveReach(){
     const rows = api.LEVEL_ROWS_FN();
     const parsed = api.parseLevel(rows);
@@ -388,6 +415,45 @@ const SCEN = {
     const P = api.player;
     console.log('  final x='+Math.round(P.x)+' (started at 1550, z1c/z1d seam at x=1696)');
     console.log('  ' + (P.x > 1750 ? 'OK: crossed the full z1c floor with a plain walk, no jump needed' : 'STUCK at x='+Math.round(P.x)+' — z1c floor is not clear'));
+  },
+
+  /* Whole-level headroom audit. Every room's decorative floor-variant texture (moss 'o',
+     crack 'x', rust 'r' — meant as flavor on the true floor row) turned out, in five separate
+     rooms across three sessions (z1c x2, z1e x2, z2a x2, z2b, z2d x2), to have been hand-typed
+     2-3 rows ABOVE the true floor instead of on it, making it an unintended solid obstacle
+     the player has to jump — sometimes with a landing so cramped it clips the wall above the
+     door band. This audit finds every column where the floor rises above the room's baseline
+     (row 12) and reports its height and the clear space directly above it, so a future edit
+     that reintroduces the pattern gets caught here instead of by a Kevin screenshot. A first
+     pass tried scoring a WINDOWED clearance (checking neighboring columns too, to catch a jump
+     arc's width) but that flagged the obstacle's own neighboring obstacles as false "low
+     ceilings" — this reports the raw numbers and lets a human judge, rather than guess at a
+     pass/fail heuristic that's already produced one class of false positive. */
+  headroomAudit(){
+    const rows = api.LEVEL_ROWS_FN();
+    const parsed = api.parseLevel(rows);
+    const g = parsed.grid, W = parsed.w, FLOOR_ROW = 12;
+    const obstacles = [];
+    for (let x = 0; x < W; x++){
+      if (!g[FLOOR_ROW][x]) continue;
+      let height = 0, yy = FLOOR_ROW - 1;
+      while (yy >= 0 && g[yy][x]) { height++; yy--; }
+      if (height === 0 || yy < 0) continue;
+      let clear = 0, yyy = yy;
+      while (yyy >= 0 && !g[yyy][x]) { clear++; yyy--; }
+      obstacles.push({x, height, clear});
+    }
+    const merged = [];
+    for (const o of obstacles){
+      const last = merged[merged.length-1];
+      if (last && o.x === last.x2+1 && o.height === last.height && o.clear === last.clear) last.x2 = o.x;
+      else merged.push({x1:o.x, x2:o.x, height:o.height, clear:o.clear});
+    }
+    console.log('  '+merged.length+' floor obstacle(s) found (world columns, tile units):');
+    for (const o of merged){
+      const flag = o.height >= 2 && o.clear <= 3 ? '  <-- LOW CLEARANCE, verify by hand' : '';
+      console.log('    col '+o.x1+(o.x1!==o.x2?'-'+o.x2:'')+'  height='+o.height+' ('+(o.height*32)+'px)  clearance_above='+o.clear+' ('+(o.clear*32)+'px)'+flag);
+    }
   },
 
   connectivity(){
