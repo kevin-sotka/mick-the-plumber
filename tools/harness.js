@@ -365,6 +365,31 @@ const SCEN = {
      real player stuck at world x=460 with no valve nearby; after that fix, the exact same
      technique (a clean, chaos-free run) found a second player stuck dead at world x=1132,
      which is this seam. Require a real gap, not a technicality. */
+  /* z1c had a decorative rubble bump ('oo' moss/crack corner texture) at BOTH the left
+     entrance and right exit, matching corners of the room. The left one (flush against the
+     door, zero run-up) was fixed already. This scenario caught the twin on the right: a
+     player who jumped it landed on TOP of it at a height that put their head back into the
+     still-solid wall above the door band, one tile short of the room's actual exit — a
+     "surfaces don't align" failure, not a jump-range one. Removed to match the left side.
+     Walks the z1c floor plain (no jump, no sprint) end to end and fails if it ever stalls. */
+  crossSeam(){
+    api.startGame(); step(20);
+    api.player.x = 1550; api.player.y = 340; api.player.vx = 0; api.player.vy = 0; api.player.iframe = 2;
+    hold('ArrowRight');
+    let stalled = 0, lastX = api.player.x;
+    for (let i = 0; i < 150; i++){
+      const P = api.player;
+      if (i % 2 === 0) repeatHeld();
+      step(1);
+      if (P.x - lastX < 0.2) stalled++; else stalled = 0;
+      lastX = P.x;
+      if (stalled > 60) break;
+    }
+    const P = api.player;
+    console.log('  final x='+Math.round(P.x)+' (started at 1550, z1c/z1d seam at x=1696)');
+    console.log('  ' + (P.x > 1750 ? 'OK: crossed the full z1c floor with a plain walk, no jump needed' : 'STUCK at x='+Math.round(P.x)+' — z1c floor is not clear'));
+  },
+
   connectivity(){
     const rows = api.LEVEL_ROWS_FN();
     const parsed = api.parseLevel(rows);
